@@ -1,0 +1,184 @@
+// ORCHESTRA: Orchestrated RFID Classroom Attendance Framework
+// Hardware-Enforced Session Trust and Roster Automation
+// Prisma Schema Definition
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// -------------------------------------------------------------
+// ENUMS
+// -------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  FACULTY
+  STUDENT
+}
+
+enum SessionStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  CUT
+  ABSENT
+  EXCUSED
+}
+
+enum AuthMethod {
+  RFID_TAP
+  KEYPAD_OTP
+  MANUAL_OVERRIDE
+  AUTO_ABSENT
+}
+
+// -------------------------------------------------------------
+// MODELS
+// -------------------------------------------------------------
+
+/// User model representing Faculty, Students, and Administrators
+model User {
+  id          String   @id @default(uuid())
+  studentId   String?  @unique // Student ID (e.g., "2023-0001-CCS") or Employee ID
+  email       String   @unique // Institutional email address
+  password    String   // Bcrypt hashed password for dashboard auth
+  firstName   String
+  lastName    String
+  role        Role     @default(STUDENT)
+  rfidUid     String?  @unique // Normalized uppercase Hex UID (e.g., "A1B2C3D4")
+  department  String?  @default("College of Computer Studies")
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relationships
+  sectionsTaught      Section[]       @relation("FacultySections")
+  enrollments         Enrollment[]    @relation("StudentEnrollments")
+  sessionsInstructed  Session[]       @relation("FacultySessions")
+  attendanceLogs      AttendanceLog[] @relation("StudentAttendance")
+  otpCodes            OtpCode[]       @relation("StudentOtps")
+  overridesAuthorized AttendanceLog[] @relation("FacultyOverrides")
+
+  @@index([role])
+  @@index([rfidUid])
+}
+
+/// Classroom Section / Course Schedule model
+model Section {
+  id                       String   @id @default(uuid())
+  sectionCode              String   @unique // e.g., "AR101-BSIT3A"
+  courseName               String   // e.g., "Computer Architecture and Organization"
+  roomNumber               String   // e.g., "LAB-304"
+  terminalId               String   // Edge terminal identifier (e.g., "TERM-CL304")
+  facultyId                String
+  faculty                  User     @relation("FacultySections", fields: [facultyId], references: [id], onDelete: Restrict)
+  defaultLateThresholdMins Int      @default(15) // Minutes after session start before marked LATE
+  defaultCutThresholdMins  Int      @default(45) // Minutes after session start before marked CUT
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  // Relationships
+  enrollments Enrollment[]
+  sessions    Session[]
+
+  @@index([terminalId])
+  @@index([facultyId])
+}
+
+/// Course Enrollment junction table
+model Enrollment {
+  id         String   @id @default(uuid())
+  studentId  String
+  sectionId  String
+  student    User     @relation("StudentEnrollments", fields: [studentId], references: [id], onDelete: Cascade)
+  section    Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  enrolledAt DateTime @default(now())
+
+  @@unique([studentId, sectionId])
+  @@index([studentId])
+  @@index([sectionId])
+}
+
+/// Physical Lecture / Lab Session governed by Hardware-Enforced Session Trust
+model Session {
+  id                String        @id @default(uuid())
+  sectionId         String
+  section           Section       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  facultyId         String
+  faculty           User          @relation("FacultySessions", fields: [facultyId], references: [id], onDelete: Restrict)
+  terminalId        String        // Terminal that opened the session
+  status            SessionStatus @default(OPEN)
+  startTime         DateTime      @default(now())
+  endTime           DateTime?
+  lateThresholdMins Int           @default(15) // Dynamic threshold adjustable via faculty dashboard
+  cutThresholdMins  Int           @default(45) // Dynamic cut threshold adjustable via faculty dashboard
+  reportPdfPath     String?       // Stored file path for generated PDF master roster
+  reportCsvPath     String?       // Stored file path for generated CSV roster
+  reportSentAt      DateTime?     // Timestamp when report was dispatched via email to faculty
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  // Relationships
+  attendanceLogs AttendanceLog[]
+  otpCodes       OtpCode[]
+
+  @@index([sectionId])
+  @@index([terminalId, status])
+  @@index([status])
+}
+
+/// Individual Attendance record for a student in a session
+model AttendanceLog {
+  id                 String           @id @default(uuid())
+  sessionId          String
+  session            Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  studentId          String
+  student            User             @relation("StudentAttendance", fields: [studentId], references: [id], onDelete: Cascade)
+  status             AttendanceStatus @default(PRESENT)
+  authMethod         AuthMethod       @default(RFID_TAP)
+  tapTimestamp       DateTime?        // Exact hardware scan or OTP submission timestamp (null if marked absent)
+  reverseReceiptSent Boolean          @default(false)
+  receiptSentAt      DateTime?        // Timestamp when security reverse-receipt email was dispatched
+  isManualOverride   Boolean          @default(false)
+  overrideReason     String?          // e.g. "Clinic Visit", "Forgotten ID", "Dean's Excuse Slip"
+  overriddenById     String?          // Faculty ID who authorized the manual override
+  overriddenBy       User?            @relation("FacultyOverrides", fields: [overriddenById], references: [id], onDelete: SetNull)
+  overriddenAt       DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  // ANTI-PASSBACK DEFENSE:
+  // Hardware-enforced and database-enforced unique constraint preventing
+  // multiple check-ins for the same student within a single session.
+  @@unique([sessionId, studentId])
+  @@index([sessionId, status])
+  @@index([studentId])
+}
+
+/// One-Time PIN for 60-second exception fallback when student forgets badge
+model OtpCode {
+  id        String    @id @default(uuid())
+  studentId String
+  student   User      @relation("StudentOtps", fields: [studentId], references: [id], onDelete: Cascade)
+  sessionId String
+  session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  code      String    // 6-digit numeric PIN (e.g. "829104")
+  expiresAt DateTime  // 60-second TTL from issuance
+  isUsed    Boolean   @default(false)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([studentId, sessionId])
+  @@index([code, isUsed])
+}
