@@ -82,6 +82,13 @@ export class OtpService {
       data: { isUsed: true },
     });
 
+    // Lazy DB hygiene: asynchronously purge expired OTPs older than 2 hours
+    prisma.otpCode.deleteMany({
+      where: {
+        expiresAt: { lt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      },
+    }).catch(() => {});
+
     // 5. Generate 6-digit numeric PIN
     const otpCode = crypto.randomInt(100000, 999999).toString();
     const expiresAt = new Date(Date.now() + 60 * 1000); // 60 seconds TTL
