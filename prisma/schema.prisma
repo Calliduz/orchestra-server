@@ -175,9 +175,10 @@ model OtpCode {
   session   Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   code      String    // 6-digit numeric PIN (e.g. "829104")
   expiresAt DateTime  // 60-second TTL from issuance
-  isUsed    Boolean   @default(false)
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
+  isUsed         Boolean   @default(false)
+  usedAt         DateTime?
+  failedAttempts Int       @default(0) // Track incorrect PIN entry attempts (3-strike lockout)
+  createdAt      DateTime  @default(now())
 
   @@index([studentId, sessionId])
   @@index([code, isUsed])

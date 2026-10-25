@@ -24,7 +24,7 @@ async function runTests() {
     // 0. Health check
     console.log('\n--- TEST 0: Health Check ---');
     const healthRes = await fetch(`${BASE_URL}/health`);
-    const healthJson = await healthRes.json();
+    const healthJson = (await healthRes.json()) as any;
     console.log('Health Response:', healthJson);
 
     // 1. Student card tap on LOCKED terminal
@@ -37,7 +37,7 @@ async function runTests() {
       },
       body: JSON.stringify({ terminalId: TERMINAL_ID, rfidUid: STUDENT1_RFID }),
     });
-    const tapLockedJson = await tapLockedRes.json();
+    const tapLockedJson = (await tapLockedRes.json()) as any;
     console.log(`Status: ${tapLockedRes.status} | Code: ${tapLockedJson.code}`);
     console.log(`Message: ${tapLockedJson.message}`);
     if (tapLockedRes.status === 403 && tapLockedJson.code === 'SESSION_LOCKED') {
@@ -56,7 +56,7 @@ async function runTests() {
       },
       body: JSON.stringify({ terminalId: TERMINAL_ID, rfidUid: FACULTY_RFID }),
     });
-    const facultyTapJson = await facultyTapRes.json();
+    const facultyTapJson = (await facultyTapRes.json()) as any;
     console.log(`Status: ${facultyTapRes.status} | Code: ${facultyTapJson.code}`);
     console.log('Data:', facultyTapJson.data);
     if (facultyTapRes.status === 200 && facultyTapJson.code === 'SESSION_STARTED') {
@@ -77,7 +77,7 @@ async function runTests() {
       },
       body: JSON.stringify({ terminalId: TERMINAL_ID, rfidUid: STUDENT1_RFID }),
     });
-    const studentTapJson = await studentTapRes.json();
+    const studentTapJson = (await studentTapRes.json()) as any;
     console.log(`Status: ${studentTapRes.status} | Code: ${studentTapJson.code}`);
     console.log('Data:', studentTapJson.data);
     if (studentTapRes.status === 200 && studentTapJson.code === 'ACCESS_GRANTED') {
@@ -96,7 +96,7 @@ async function runTests() {
       },
       body: JSON.stringify({ terminalId: TERMINAL_ID, rfidUid: STUDENT1_RFID }),
     });
-    const duplicateTapJson = await duplicateTapRes.json();
+    const duplicateTapJson = (await duplicateTapRes.json()) as any;
     console.log(`Status: ${duplicateTapRes.status} | Code: ${duplicateTapJson.code}`);
     console.log(`Message: ${duplicateTapJson.message}`);
     if (duplicateTapRes.status === 409 && duplicateTapJson.code === 'ALREADY_RECORDED') {
@@ -112,7 +112,7 @@ async function runTests() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ identifier: STUDENT2_ID }),
     });
-    const otpReqJson = await otpReqRes.json();
+    const otpReqJson = (await otpReqRes.json()) as any;
     console.log(`Status: ${otpReqRes.status} | Message: ${otpReqJson.message}`);
     console.log('OTP Data:', otpReqJson.data);
     const otpCode = otpReqJson.data.otp;
@@ -132,7 +132,7 @@ async function runTests() {
       },
       body: JSON.stringify({ terminalId: TERMINAL_ID, code: otpCode }),
     });
-    const otpVerifyJson = await otpVerifyRes.json();
+    const otpVerifyJson = (await otpVerifyRes.json()) as any;
     console.log(`Status: ${otpVerifyRes.status} | Code: ${otpVerifyJson.code}`);
     console.log('Data:', otpVerifyJson.data);
     if (otpVerifyRes.status === 200 && otpVerifyJson.code === 'OTP_GRANTED') {
@@ -148,7 +148,7 @@ async function runTests() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lateThresholdMins: 20, cutThresholdMins: 50 }),
     });
-    const thresholdJson = await thresholdRes.json();
+    const thresholdJson = (await thresholdRes.json()) as any;
     console.log(`Status: ${thresholdRes.status} | Late: ${thresholdJson.data.session.lateThresholdMins}m | Cut: ${thresholdJson.data.session.cutThresholdMins}m`);
     if (thresholdRes.status === 200) {
       console.log('✅ PASS: Punctuality thresholds updated dynamically.');
@@ -165,7 +165,7 @@ async function runTests() {
         reason: 'University Clinic Medical Referral - Fever',
       }),
     });
-    const overrideJson = await overrideRes.json();
+    const overrideJson = (await overrideRes.json()) as any;
     console.log(`Status: ${overrideRes.status} | Status: ${overrideJson.data.log.status} | Remarks: ${overrideJson.data.log.overrideReason}`);
     if (overrideRes.status === 200 && overrideJson.data.log.status === 'EXCUSED') {
       console.log('✅ PASS: Manual override applied successfully.');
@@ -181,7 +181,7 @@ async function runTests() {
       },
       body: JSON.stringify({ terminalId: TERMINAL_ID, rfidUid: FACULTY_RFID }),
     });
-    const facultyCloseJson = await facultyCloseRes.json();
+    const facultyCloseJson = (await facultyCloseRes.json()) as any;
     console.log(`Status: ${facultyCloseRes.status} | Code: ${facultyCloseJson.code}`);
     console.log('Final Stats:', facultyCloseJson.data.stats);
     console.log('Generated PDF Path:', facultyCloseJson.data.pdfPath);

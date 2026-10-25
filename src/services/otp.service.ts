@@ -8,7 +8,7 @@ import { emitAttendanceUpdated } from '../sockets/telemetry.socket.js';
 export interface OtpVerificationResult {
   statusCode: number;
   success: boolean;
-  code: 'OTP_GRANTED' | 'INVALID_OTP' | 'SESSION_LOCKED' | 'ALREADY_RECORDED' | 'ERROR';
+  code: 'OTP_GRANTED' | 'INVALID_OTP' | 'LOCKED_OUT' | 'SESSION_LOCKED' | 'ALREADY_RECORDED' | 'ERROR';
   message: string;
   data?: any;
 }
@@ -93,6 +93,7 @@ export class OtpService {
         code: otpCode,
         expiresAt,
         isUsed: false,
+        failedAttempts: 0,
       },
     });
 
@@ -146,7 +147,7 @@ export class OtpService {
 
     const now = new Date();
 
-    // 2. Query valid unexpired, unused OTP for this session
+    // 2. Query valid unexpired, unused OTP for this session matching the code
     const otpRecord = await prisma.otpCode.findFirst({
       where: {
         sessionId: activeSession.id,
@@ -160,11 +161,61 @@ export class OtpService {
     });
 
     if (!otpRecord) {
+      // 3-STRIKE LOCKOUT DEFENSE:
+      // Track failed attempt against the pending active OTP for this session
+      const pendingOtp = await prisma.otpCode.findFirst({
+        where: {
+          sessionId: activeSession.id,
+          isUsed: false,
+          expiresAt: { gt: now },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (pendingOtp) {
+        const nextAttempts = pendingOtp.failedAttempts + 1;
+        const isLockedOut = nextAttempts >= 3;
+
+        await prisma.otpCode.update({
+          where: { id: pendingOtp.id },
+          data: {
+            failedAttempts: nextAttempts,
+            isUsed: isLockedOut, // Invalidate/burn token upon 3 failed attempts
+          },
+        });
+
+        if (isLockedOut) {
+          return {
+            statusCode: 403,
+            success: false,
+            code: 'LOCKED_OUT',
+            message: 'SECURITY LOCKOUT: Maximum 3 failed PIN attempts exceeded. This OTP has been invalidated.',
+          };
+        }
+
+        return {
+          statusCode: 400,
+          success: false,
+          code: 'INVALID_OTP',
+          message: `INVALID PIN: Code does not match. Attempt ${nextAttempts} of 3 before token lockout.`,
+        };
+      }
+
       return {
         statusCode: 400,
         success: false,
         code: 'INVALID_OTP',
-        message: 'INVALID OR EXPIRED OTP: Code has expired or does not match this session.',
+        message: 'INVALID OR EXPIRED OTP: Code has expired or no active token matches this session.',
+      };
+    }
+
+    // Guard: Matched OTP is already locked out
+    if (otpRecord.failedAttempts >= 3) {
+      return {
+        statusCode: 403,
+        success: false,
+        code: 'LOCKED_OUT',
+        message: 'SECURITY LOCKOUT: This OTP was invalidated due to excessive failed attempts.',
       };
     }
 

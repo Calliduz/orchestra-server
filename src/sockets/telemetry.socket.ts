@@ -1,13 +1,19 @@
 import { Server as HttpServer } from 'http';
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { env } from '../config/env.js';
+import { isOriginAllowed } from '../config/cors.js';
 
 let io: SocketIOServer | null = null;
 
 export function initializeSocket(httpServer: HttpServer): SocketIOServer {
   io = new SocketIOServer(httpServer, {
     cors: {
-      origin: [env.CLIENT_ORIGIN, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+      origin: (origin, callback) => {
+        if (isOriginAllowed(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error(`Origin ${origin} not allowed by ORCHESTRA WebSocket CORS policy`));
+        }
+      },
       methods: ['GET', 'POST', 'PATCH'],
       credentials: true,
     },
