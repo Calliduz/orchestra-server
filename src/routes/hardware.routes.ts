@@ -9,5 +9,6 @@ const router = Router();
 router.post('/tap', hardwareAuth, hardwareTapLimiter, (req, res) => hardwareController.handleCardTap(req, res));
 router.post('/otp', hardwareAuth, keypadOtpLimiter, (req, res) => hardwareController.handleKeypadOtp(req, res));
 router.get('/status/:terminalId', (req, res) => hardwareController.getTerminalStatus(req, res));
+router.get('/last-scanned', (req, res) => hardwareController.getLastScanned(req, res));
 
 export default router;

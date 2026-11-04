@@ -116,6 +116,18 @@ export class HardwareController {
       });
     }
   }
+
+  /**
+   * GET /api/v1/hardware/last-scanned
+   * Returns the most recently scanned RFID tag for live web registration
+   */
+  getLastScanned(req: Request, res: Response): void {
+    const last = hardwareService.getLastScanned();
+    res.status(200).json({
+      success: true,
+      data: last,
+    });
+  }
 }
 
 export const hardwareController = new HardwareController();

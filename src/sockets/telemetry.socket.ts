@@ -139,3 +139,20 @@ export function emitPunctualityThresholdUpdated(payload: {
   io.emit('thresholds:updated', payload);
   io.to(`session:${payload.sessionId}`).emit('thresholds:updated', payload);
 }
+
+
+export function emitCardScanned(payload: {
+  rfidUid: string;
+  terminalId: string;
+  timestamp: string;
+  isRegistered: boolean;
+  cardHolder?: {
+    name: string;
+    role: string;
+    studentId: string;
+  } | null;
+}) {
+  if (!io) return;
+  console.log(`📢 Broadcasting [card:scanned] UID: ${payload.rfidUid} (Registered: ${payload.isRegistered})`);
+  io.emit('card:scanned', payload);
+}

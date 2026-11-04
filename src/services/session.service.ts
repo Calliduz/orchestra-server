@@ -372,10 +372,7 @@ export class SessionService {
       });
     }
 
-    // 3. Generate PDF and CSV Master Reports
-    const { pdfPath, csvPath } = await reportService.generateSessionReports(sessionId);
-
-    // 4. Calculate final stats & roster
+    // 3. Calculate final stats & roster
     const finalSession = await prisma.session.findUnique({
       where: { id: sessionId },
       include: {
@@ -395,24 +392,7 @@ export class SessionService {
 
     const finalStats = this.calculateStats(finalRoster);
 
-    // 5. Send automated report to faculty via Nodemailer
-    await mailerService.sendFacultySessionReport({
-      facultyEmail: session.faculty.email,
-      facultyName: `${session.faculty.firstName} ${session.faculty.lastName}`,
-      sectionCode: session.section.sectionCode,
-      courseName: session.section.courseName,
-      pdfPath,
-      csvPath,
-      stats: finalStats,
-    });
-
-    // Update reportSentAt
-    await prisma.session.update({
-      where: { id: sessionId },
-      data: { reportSentAt: new Date() },
-    });
-
-    // 6. Broadcast Socket.io session:closed event
+    // 4. Broadcast Socket.io session:closed event immediately to dashboards and terminals
     emitSessionClosed({
       sessionId,
       terminalId: session.terminalId,
@@ -423,12 +403,33 @@ export class SessionService {
       roster: finalRoster,
     });
 
+    // 5. Asynchronously generate PDF/CSV reports and dispatch email to faculty in background
+    (async () => {
+      try {
+        const { pdfPath, csvPath } = await reportService.generateSessionReports(sessionId);
+        await mailerService.sendFacultySessionReport({
+          facultyEmail: session.faculty.email,
+          facultyName: `${session.faculty.firstName} ${session.faculty.lastName}`,
+          sectionCode: session.section.sectionCode,
+          courseName: session.section.courseName,
+          pdfPath,
+          csvPath,
+          stats: finalStats,
+        });
+        await prisma.session.update({
+          where: { id: sessionId },
+          data: { reportSentAt: new Date() },
+        });
+        console.log(`📧 Master attendance report dispatched to ${session.faculty.email}`);
+      } catch (err) {
+        console.error('⚠️ Background report generation / email error:', err);
+      }
+    })();
+
     return {
       success: true,
       sessionId,
       stats: finalStats,
-      pdfPath,
-      csvPath,
     };
   }
 

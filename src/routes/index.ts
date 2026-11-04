@@ -3,6 +3,7 @@ import hardwareRoutes from './hardware.routes.js';
 import sessionRoutes from './session.routes.js';
 import otpRoutes from './otp.routes.js';
 import authRoutes from './auth.routes.js';
+import userRoutes from './user.routes.js';
 
 const router = Router();
 
@@ -10,6 +11,7 @@ router.use('/hardware', hardwareRoutes);
 router.use('/sessions', sessionRoutes);
 router.use('/otp', otpRoutes);
 router.use('/auth', authRoutes);
+router.use('/users', userRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {

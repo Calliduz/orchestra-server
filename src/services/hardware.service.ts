@@ -2,7 +2,7 @@ import { SessionStatus, AttendanceStatus, AuthMethod, Role } from '@prisma/clien
 import prisma from '../config/prisma.js';
 import { sessionService } from './session.service.js';
 import { mailerService } from './mailer.service.js';
-import { emitSessionStarted, emitAttendanceUpdated } from '../sockets/telemetry.socket.js';
+import { emitSessionStarted, emitAttendanceUpdated, emitCardScanned } from '../sockets/telemetry.socket.js';
 
 export interface HardwareTapResult {
   statusCode: number;
@@ -13,6 +13,17 @@ export interface HardwareTapResult {
 }
 
 export class HardwareService {
+  private lastScannedCard: {
+    rfidUid: string;
+    terminalId: string;
+    timestamp: string;
+    isRegistered: boolean;
+    cardHolder: any;
+  } | null = null;
+
+  getLastScanned() {
+    return this.lastScannedCard;
+  }
   /**
    * Normalizes raw RFID UID strings from hardware (removes spaces, colons, lower-case)
    */
@@ -25,6 +36,7 @@ export class HardwareService {
    */
   async processCardTap(terminalId: string, rawRfidUid: string): Promise<HardwareTapResult> {
     const cleanRfid = this.normalizeRfid(rawRfidUid);
+    console.log(`\n🏷️ [RFID TAP SCANNED] Terminal: ${terminalId} | Scanned Card UID: ${cleanRfid}\n`);
 
     // 1. Identify active session for this terminal
     const activeSession = await prisma.session.findFirst({
