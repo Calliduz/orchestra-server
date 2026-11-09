@@ -19,12 +19,13 @@ export class MailerService {
     try {
       const transporter = await getTransporter();
 
-      const timeString = params.tapTime.toLocaleTimeString([], {
-        hour: '2-digit',
+      const timeString = params.tapTime.toLocaleTimeString('en-US', {
+        hour: 'numeric',
         minute: '2-digit',
         second: '2-digit',
+        hour12: true,
       });
-      const dateString = params.tapTime.toLocaleDateString([], {
+      const dateString = params.tapTime.toLocaleDateString('en-US', {
         weekday: 'long',
         year: 'numeric',
         month: 'long',
@@ -91,15 +92,17 @@ export class MailerService {
   }
 
   /**
-   * Dispatches Master Attendance PDF and CSV reports to faculty upon session closure
+   * Dispatches Master Attendance PDF, CSV, and Excel reports to faculty or custom recipient
    */
   async sendFacultySessionReport(params: {
     facultyEmail: string;
     facultyName: string;
     sectionCode: string;
     courseName: string;
-    pdfPath: string;
-    csvPath: string;
+    pdfPath?: string;
+    csvPath?: string;
+    xlsxPath?: string;
+    recipientEmail?: string;
     stats: {
       totalEnrolled: number;
       present: number;
@@ -111,6 +114,7 @@ export class MailerService {
   }): Promise<boolean> {
     try {
       const transporter = await getTransporter();
+      const targetEmail = params.recipientEmail || params.facultyEmail;
 
       const htmlContent = `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
@@ -121,7 +125,7 @@ export class MailerService {
           <div style="padding: 24px;">
             <p style="font-size: 15px; color: #1e293b; margin-top: 0;">Dear <strong>Prof. ${params.facultyName}</strong>,</p>
             <p style="font-size: 14px; color: #475569; line-height: 1.5;">
-              Your class session for <strong>${params.sectionCode} (${params.courseName})</strong> has successfully concluded. Unlogged students have been recorded as <em>ABSENT</em>, and the consolidated master attendance records have been attached to this email in both official PDF and CSV spreadsheet formats.
+              The attendance report for <strong>${params.sectionCode} (${params.courseName})</strong> is ready. Unlogged students have been recorded as <em>ABSENT</em>, and the consolidated master attendance records are attached in official PDF, Excel (.xlsx), and CSV formats.
             </p>
             
             <div style="display: flex; gap: 10px; margin: 20px 0;">
@@ -145,8 +149,9 @@ export class MailerService {
 
             <p style="font-size: 13px; color: #64748b;">
               Attached files:
-              <br/>&bull; <code>${params.sectionCode}_Master_Attendance.pdf</code> (Formatted PDF Roster)
-              <br/>&bull; <code>${params.sectionCode}_Master_Attendance.csv</code> (Spreadsheet Export)
+              <br/>&bull; <code>${params.sectionCode}_Master_Attendance.pdf</code> (Formatted PDF Document)
+              <br/>&bull; <code>${params.sectionCode}_Master_Attendance.xlsx</code> (Excel Workbook)
+              <br/>&bull; <code>${params.sectionCode}_Master_Attendance.csv</code> (Spreadsheet Data)
             </p>
           </div>
           <div style="background: #f1f5f9; padding: 12px 24px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0;">
@@ -155,27 +160,38 @@ export class MailerService {
         </div>
       `;
 
+      const attachments = [];
+      if (params.pdfPath) {
+        attachments.push({
+          filename: `${params.sectionCode}_Master_Attendance.pdf`,
+          path: params.pdfPath,
+        });
+      }
+      if (params.xlsxPath) {
+        attachments.push({
+          filename: `${params.sectionCode}_Master_Attendance.xlsx`,
+          path: params.xlsxPath,
+        });
+      }
+      if (params.csvPath) {
+        attachments.push({
+          filename: `${params.sectionCode}_Master_Attendance.csv`,
+          path: params.csvPath,
+        });
+      }
+
       const info = await transporter.sendMail({
         from: env.SMTP_FROM,
-        to: params.facultyEmail,
-        subject: `[Master Roster Report] ${params.sectionCode} - ${new Date().toLocaleDateString()}`,
+        to: targetEmail,
+        subject: `[Master Roster Report] ${params.sectionCode} - ${new Date().toLocaleDateString('en-US')}`,
         html: htmlContent,
-        attachments: [
-          {
-            filename: `${params.sectionCode}_Master_Attendance.pdf`,
-            path: params.pdfPath,
-          },
-          {
-            filename: `${params.sectionCode}_Master_Attendance.csv`,
-            path: params.csvPath,
-          },
-        ],
+        attachments,
       });
 
-      console.log(`✉️ Master report delivered to faculty ${params.facultyEmail}: ${info.messageId}`);
+      console.log(`✉️ Master report delivered to ${targetEmail}: ${info.messageId}`);
       return true;
     } catch (err) {
-      console.error(`⚠️ Failed to deliver master report to faculty ${params.facultyEmail}:`, err);
+      console.error(`⚠️ Failed to deliver master report to ${params.facultyEmail}:`, err);
       return false;
     }
   }

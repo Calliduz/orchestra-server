@@ -21,7 +21,7 @@ export class SessionService {
       include: {
         section: true,
         faculty: {
-          select: { id: true, firstName: true, lastName: true, email: true, rfidUid: true },
+          select: { id: true, firstName: true, lastName: true, email: true, rfidUid: true, role: true },
         },
         attendanceLogs: {
           include: {
@@ -134,7 +134,7 @@ export class SessionService {
         sectionCode: session.section.sectionCode,
         courseName: session.section.courseName,
         roomNumber: session.section.roomNumber,
-        facultyName: `Prof. ${session.faculty.firstName} ${session.faculty.lastName}`,
+        facultyName: session.faculty.role === 'ADMIN' ? `${session.faculty.firstName} ${session.faculty.lastName}` : `Prof. ${session.faculty.firstName} ${session.faculty.lastName}`,
         startTime: session.startTime,
         lateThresholdMins: session.lateThresholdMins,
         cutThresholdMins: session.cutThresholdMins,
@@ -403,10 +403,10 @@ export class SessionService {
       roster: finalRoster,
     });
 
-    // 5. Asynchronously generate PDF/CSV reports and dispatch email to faculty in background
+    // 5. Asynchronously generate PDF/CSV/XLSX reports and dispatch email to faculty in background
     (async () => {
       try {
-        const { pdfPath, csvPath } = await reportService.generateSessionReports(sessionId);
+        const { pdfPath, csvPath, xlsxPath } = await reportService.generateSessionReports(sessionId);
         await mailerService.sendFacultySessionReport({
           facultyEmail: session.faculty.email,
           facultyName: `${session.faculty.firstName} ${session.faculty.lastName}`,
@@ -414,6 +414,7 @@ export class SessionService {
           courseName: session.section.courseName,
           pdfPath,
           csvPath,
+          xlsxPath,
           stats: finalStats,
         });
         await prisma.session.update({
@@ -436,7 +437,7 @@ export class SessionService {
   /**
    * Helper to tally statistics
    */
-  private calculateStats(roster: { status: string }[]) {
+  calculateStats(roster: { status: string }[]) {
     const totalEnrolled = roster.length;
     const present = roster.filter((r) => r.status === 'PRESENT').length;
     const late = roster.filter((r) => r.status === 'LATE').length;

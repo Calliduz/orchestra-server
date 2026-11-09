@@ -62,7 +62,7 @@ async function main() {
   console.log(`✅ Created Faculty: ${faculty1.firstName} ${faculty1.lastName} (Master RFID: ${faculty1.rfidUid})`);
   console.log(`✅ Created Faculty: ${faculty2.firstName} ${faculty2.lastName} (Master RFID: ${faculty2.rfidUid})`);
 
-  // 4. Seed Course Section
+  // 4. Seed Course Sections
   console.log('🏫 Seeding Course Sections...');
   const section1 = await prisma.section.create({
     data: {
@@ -76,7 +76,20 @@ async function main() {
     },
   });
 
+  const section2 = await prisma.section.create({
+    data: {
+      sectionCode: 'IT302-BSIT3B',
+      courseName: 'Web Systems and Technologies',
+      roomNumber: 'LAB-304',
+      terminalId: 'TERM-CL304',
+      facultyId: faculty2.id,
+      defaultLateThresholdMins: 15,
+      defaultCutThresholdMins: 45,
+    },
+  });
+
   console.log(`✅ Created Section: ${section1.sectionCode} - ${section1.courseName} (Terminal: ${section1.terminalId})`);
+  console.log(`✅ Created Section: ${section2.sectionCode} - ${section2.courseName} (Terminal: ${section2.terminalId})`);
 
   // 5. Seed Students (Research Co-Authors and Classmates)
   console.log('🎓 Seeding Student Roster...');
@@ -183,16 +196,22 @@ async function main() {
     });
     createdStudents.push(student);
 
-    // Enroll each student into Section AR101-BSIT3A
+    // Enroll each student into Section AR101-BSIT3A and IT302-BSIT3B
     await prisma.enrollment.create({
       data: {
         studentId: student.id,
         sectionId: section1.id,
       },
     });
+    await prisma.enrollment.create({
+      data: {
+        studentId: student.id,
+        sectionId: section2.id,
+      },
+    });
   }
 
-  console.log(`✅ Seeded and enrolled ${createdStudents.length} students into ${section1.sectionCode}.`);
+  console.log(`✅ Seeded and enrolled ${createdStudents.length} students into ${section1.sectionCode} and ${section2.sectionCode}.`);
 
   // 6. Seed a Past Completed Session (Historical Demonstration)
   console.log('📜 Seeding an archived past session with historical attendance logs...');

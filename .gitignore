@@ -18,6 +18,7 @@ yarn-error.log*
 # Generated Attendance Reports
 reports/*.pdf
 reports/*.csv
+reports/*.xlsx
 !reports/.gitkeep
 
 # System & Editor Files

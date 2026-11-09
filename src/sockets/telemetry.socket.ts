@@ -149,7 +149,7 @@ export function emitCardScanned(payload: {
   cardHolder?: {
     name: string;
     role: string;
-    studentId: string;
+    studentId?: string | null;
   } | null;
 }) {
   if (!io) return;

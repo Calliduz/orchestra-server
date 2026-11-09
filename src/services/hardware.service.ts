@@ -7,7 +7,16 @@ import { emitSessionStarted, emitAttendanceUpdated, emitCardScanned } from '../s
 export interface HardwareTapResult {
   statusCode: number;
   success: boolean;
-  code: 'SESSION_STARTED' | 'SESSION_CLOSED' | 'ACCESS_GRANTED' | 'SESSION_LOCKED' | 'NOT_ENROLLED' | 'ALREADY_RECORDED' | 'UNREGISTERED_CARD' | 'ERROR';
+  code:
+    | 'SESSION_STARTED'
+    | 'SESSION_CLOSED'
+    | 'ACCESS_GRANTED'
+    | 'SESSION_LOCKED'
+    | 'NOT_ENROLLED'
+    | 'NOT_SESSION_OWNER'
+    | 'ALREADY_RECORDED'
+    | 'UNREGISTERED_CARD'
+    | 'ERROR';
   message: string;
   data?: any;
 }
@@ -57,15 +66,45 @@ export class HardwareService {
 
     const now = new Date();
 
+    // Cache last scanned card for live enrollment & terminal monitoring
+    this.lastScannedCard = {
+      rfidUid: cleanRfid,
+      terminalId,
+      timestamp: now.toISOString(),
+      isRegistered: !!cardHolder,
+      cardHolder: cardHolder
+        ? {
+            id: cardHolder.id,
+            name: `${cardHolder.firstName} ${cardHolder.lastName}`,
+            role: cardHolder.role,
+            studentId: cardHolder.studentId,
+          }
+        : null,
+    };
+
+    emitCardScanned({
+      rfidUid: cleanRfid,
+      terminalId,
+      timestamp: now.toISOString(),
+      isRegistered: !!cardHolder,
+      cardHolder: cardHolder
+        ? {
+            name: `${cardHolder.firstName} ${cardHolder.lastName}`,
+            role: cardHolder.role,
+            studentId: cardHolder.studentId,
+          }
+        : undefined,
+    });
+
     // -----------------------------------------------------------------
     // CASE 1: TERMINAL IS IN LOCKED STATE (No Active Session)
     // -----------------------------------------------------------------
     if (!activeSession) {
       if (!cardHolder) {
         return {
-          statusCode: 403,
+          statusCode: 404,
           success: false,
-          code: 'SESSION_LOCKED',
+          code: 'UNREGISTERED_CARD',
           message: 'Terminal locked. Unregistered badge scanned.',
         };
       }
@@ -76,15 +115,39 @@ export class HardwareService {
           statusCode: 403,
           success: false,
           code: 'SESSION_LOCKED',
-          message: 'TERMINAL LOCKED: Waiting for Faculty Master Badge to initiate session.',
+          message: 'TERMINAL LOCKED: Tap Faculty badge to initiate session.',
         };
       }
 
       // If Faculty or Admin scans master badge -> UNLOCK TERMINAL & OPEN SESSION
-      const section = await prisma.section.findFirst({
-        where: { terminalId },
+      // 1. Try finding section specifically assigned to this faculty on this terminal
+      let section = await prisma.section.findFirst({
+        where: { terminalId, facultyId: cardHolder.id },
         include: { faculty: true },
       });
+
+      // 2. Fallback: check if this faculty has any section assigned to them
+      if (!section) {
+        section = await prisma.section.findFirst({
+          where: { facultyId: cardHolder.id },
+          include: { faculty: true },
+        });
+      }
+
+      // 3. Fallback: check if this terminal has any active section (e.g. substitute/guest instructor)
+      if (!section) {
+        section = await prisma.section.findFirst({
+          where: { terminalId },
+          include: { faculty: true },
+        });
+      }
+
+      // 4. Fallback: grab any existing section in the system
+      if (!section) {
+        section = await prisma.section.findFirst({
+          include: { faculty: true },
+        });
+      }
 
       if (!section) {
         return {
@@ -121,7 +184,7 @@ export class HardwareService {
         sectionCode: section.sectionCode,
         courseName: section.courseName,
         roomNumber: section.roomNumber,
-        facultyName: `Prof. ${cardHolder.firstName} ${cardHolder.lastName}`,
+        facultyName: cardHolder.role === Role.ADMIN ? `${cardHolder.firstName} ${cardHolder.lastName}` : `Prof. ${cardHolder.firstName} ${cardHolder.lastName}`,
         startTime: now.toISOString(),
         lateThresholdMins: newSession.lateThresholdMins,
         cutThresholdMins: newSession.cutThresholdMins,
@@ -160,8 +223,18 @@ export class HardwareService {
       };
     }
 
-    // SUB-CASE 2A: Faculty Master Badge scanned a second time -> CLOSE SESSION
+    // SUB-CASE 2A: Faculty Master Badge scanned -> CLOSE SESSION
     if (cardHolder.role === Role.FACULTY || cardHolder.role === Role.ADMIN) {
+      // Prevent other faculty from closing someone else's session
+      if (cardHolder.role === Role.FACULTY && cardHolder.id !== activeSession.facultyId) {
+        return {
+          statusCode: 403,
+          success: false,
+          code: 'NOT_SESSION_OWNER',
+          message: `ACCESS DENIED: Session was initiated by Prof. ${activeSession.faculty.lastName}. Only they or an administrator can end this session.`,
+        };
+      }
+
       const closeResult = await sessionService.closeSession(activeSession.id);
 
       return {

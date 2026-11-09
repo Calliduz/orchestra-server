@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import PDFDocument from 'pdfkit';
 import * as csv from 'fast-csv';
+import ExcelJS from 'exceljs';
 import prisma from '../config/prisma.js';
 
 interface RosterItem {
@@ -27,9 +28,45 @@ export class ReportService {
   }
 
   /**
-   * Generates both PDF and CSV reports for a completed session
+   * Helper to format time into 12-hour AM/PM format (non-military)
    */
-  async generateSessionReports(sessionId: string): Promise<{ pdfPath: string; csvPath: string; pdfBuffer: Buffer; csvString: string }> {
+  format12HourTime(date: Date | string | null | undefined): string {
+    if (!date) return '--:--:--';
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (isNaN(d.getTime())) return '--:--:--';
+    return d.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  }
+
+  /**
+   * Helper to format short 12-hour time without seconds
+   */
+  format12HourShort(date: Date | string | null | undefined): string {
+    if (!date) return '--:--';
+    const d = typeof date === 'string' ? new Date(date) : date;
+    if (isNaN(d.getTime())) return '--:--';
+    return d.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+
+  /**
+   * Generates PDF, CSV, and Excel reports for a completed session
+   */
+  async generateSessionReports(sessionId: string): Promise<{
+    pdfPath: string;
+    csvPath: string;
+    xlsxPath: string;
+    pdfBuffer: Buffer;
+    csvString: string;
+    xlsxBuffer: Buffer;
+  }> {
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       include: {
@@ -66,7 +103,7 @@ export class ReportService {
         email: student.email,
         status: log?.status || 'ABSENT',
         authMethod: log?.authMethod || 'AUTO_ABSENT',
-        tapTime: log?.tapTimestamp ? new Date(log.tapTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--',
+        tapTime: log?.tapTimestamp ? this.format12HourTime(log.tapTimestamp) : '--:--:--',
         isOverride: log?.isManualOverride ? 'YES' : 'NO',
         remarks: log?.overrideReason || (log?.status === 'ABSENT' ? 'Unlogged at Session Close' : 'Normal Hardware Check-in'),
       };
@@ -84,15 +121,13 @@ export class ReportService {
     const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
     const pdfFilename = `ORCHESTRA_Roster_${session.section.sectionCode}_${sessionId.slice(0, 8)}_${timestampStr}.pdf`;
     const csvFilename = `ORCHESTRA_Roster_${session.section.sectionCode}_${sessionId.slice(0, 8)}_${timestampStr}.csv`;
+    const xlsxFilename = `ORCHESTRA_Roster_${session.section.sectionCode}_${sessionId.slice(0, 8)}_${timestampStr}.xlsx`;
 
     const pdfPath = path.join(this.reportsDir, pdfFilename);
     const csvPath = path.join(this.reportsDir, csvFilename);
+    const xlsxPath = path.join(this.reportsDir, xlsxFilename);
 
-    // 1. Generate CSV
-    const csvString = await this.generateCsvFile(csvPath, session, roster);
-
-    // 2. Generate PDF
-    const pdfBuffer = await this.generatePdfFile(pdfPath, session, roster, {
+    const statsObj = {
       totalEnrolled,
       presentCount,
       lateCount,
@@ -100,7 +135,16 @@ export class ReportService {
       excusedCount,
       absentCount,
       attendanceRate,
-    });
+    };
+
+    // 1. Generate CSV
+    const csvString = await this.generateCsvFile(csvPath, session, roster);
+
+    // 2. Generate PDF
+    const pdfBuffer = await this.generatePdfFile(pdfPath, session, roster, statsObj);
+
+    // 3. Generate Excel
+    const xlsxBuffer = await this.generateExcelFile(xlsxPath, session, roster, statsObj);
 
     // Update session record with paths
     await prisma.session.update({
@@ -111,7 +155,14 @@ export class ReportService {
       },
     });
 
-    return { pdfPath, csvPath, pdfBuffer, csvString };
+    return {
+      pdfPath,
+      csvPath,
+      xlsxPath,
+      pdfBuffer,
+      csvString,
+      xlsxBuffer,
+    };
   }
 
   /**
@@ -127,22 +178,222 @@ export class ReportService {
       'Course Name': session.section.courseName,
       'Classroom': session.section.roomNumber,
       'Terminal ID': session.terminalId,
-      'Session Start': session.startTime.toISOString(),
-      'Session End': session.endTime?.toISOString() || '',
-      'Tap Timestamp': item.tapTime,
+      'Session Start': this.format12HourShort(session.startTime),
+      'Session End': session.endTime ? this.format12HourShort(session.endTime) : 'Ongoing',
       'Attendance Status': item.status,
-      'Authentication Method': item.authMethod,
+      'Auth Method': item.authMethod,
+      'Check-in Time (12-Hour)': item.tapTime,
       'Manual Override': item.isOverride,
       'Remarks': item.remarks,
     }));
 
-    const csvContent = await csv.writeToString(csvRows, { headers: true });
-    await fs.promises.writeFile(filePath, csvContent, 'utf-8');
-    return csvContent;
+    return new Promise((resolve, reject) => {
+      const ws = fs.createWriteStream(filePath);
+      const csvStream = csv.format({ headers: true });
+
+      let csvAccumulator = '';
+      csvStream.on('data', (chunk) => {
+        csvAccumulator += chunk.toString();
+      });
+
+      csvStream.pipe(ws);
+      csvRows.forEach((row) => csvStream.write(row));
+      csvStream.end();
+
+      ws.on('finish', () => resolve(csvAccumulator));
+      ws.on('error', (err) => reject(err));
+    });
   }
 
   /**
-   * Generates publication-grade PDF using PDFKit
+   * Generates formatted Excel (.xlsx) workbook using ExcelJS
+   */
+  async generateExcelFile(
+    filePath: string,
+    session: any,
+    roster: RosterItem[],
+    stats: {
+      totalEnrolled: number;
+      presentCount: number;
+      lateCount: number;
+      cutCount: number;
+      excusedCount: number;
+      absentCount: number;
+      attendanceRate: string;
+    }
+  ): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'ORCHESTRA Attendance Framework';
+    workbook.lastModifiedBy = 'ORCHESTRA Server';
+    workbook.created = new Date();
+    workbook.modified = new Date();
+
+    const sheet = workbook.addWorksheet('Attendance Roster', {
+      pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+    });
+
+    // Title Block
+    sheet.mergeCells('A1:I1');
+    const titleCell = sheet.getCell('A1');
+    titleCell.value = 'COLLEGE OF COMPUTER STUDIES - ATTENDANCE RECORD';
+    titleCell.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(1).height = 30;
+
+    sheet.mergeCells('A2:I2');
+    const subtitleCell = sheet.getCell('A2');
+    subtitleCell.value = 'ORCHESTRA: RFID SESSION TRUST & ROSTER AUTOMATION';
+    subtitleCell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF2563EB' } };
+    subtitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(2).height = 20;
+
+    // Metadata Grid
+    const startFmt = this.format12HourShort(session.startTime);
+    const endFmt = session.endTime ? this.format12HourShort(session.endTime) : 'Ongoing';
+    const sessionDate = new Date(session.startTime).toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    const metaRows = [
+      ['Course & Section:', `${session.section.sectionCode} - ${session.section.courseName}`, '', 'Date:', sessionDate],
+      ['Instructor:', `Prof. ${session.faculty.firstName} ${session.faculty.lastName} (${session.faculty.email})`, '', 'Session Time:', `${startFmt} - ${endFmt}`],
+      ['Location & Terminal:', `${session.section.roomNumber} [Terminal: ${session.terminalId}]`, '', 'Grace Windows:', `Late: ${session.lateThresholdMins}m | Cut: ${session.cutThresholdMins}m`],
+    ];
+
+    metaRows.forEach((rowVals) => {
+      const row = sheet.addRow(rowVals);
+      row.getCell(1).font = { bold: true, color: { argb: 'FF475569' } };
+      row.getCell(2).font = { bold: true, color: { argb: 'FF0F172A' } };
+      row.getCell(4).font = { bold: true, color: { argb: 'FF475569' } };
+      row.getCell(5).font = { bold: true, color: { argb: 'FF0F172A' } };
+    });
+
+    sheet.addRow([]); // Blank row
+
+    // KPI Summary Header
+    sheet.addRow(['ATTENDANCE KPI SUMMARY']);
+    sheet.getCell(`A${sheet.rowCount}`).font = { bold: true, size: 12, color: { argb: 'FF1E293B' } };
+
+    const kpiHeaderRow = sheet.addRow(['Enrolled', 'Present', 'Late', 'Cut', 'Excused', 'Absent', 'Attendance Rate']);
+    kpiHeaderRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF334155' } };
+      cell.alignment = { horizontal: 'center' };
+    });
+
+    const kpiValRow = sheet.addRow([
+      stats.totalEnrolled,
+      stats.presentCount,
+      stats.lateCount,
+      stats.cutCount,
+      stats.excusedCount,
+      stats.absentCount,
+      `${stats.attendanceRate}%`,
+    ]);
+    kpiValRow.eachCell((cell, colNum) => {
+      cell.font = { bold: true, size: 12 };
+      cell.alignment = { horizontal: 'center' };
+      if (colNum === 2) cell.font = { bold: true, size: 12, color: { argb: 'FF16A34A' } };
+      if (colNum === 3) cell.font = { bold: true, size: 12, color: { argb: 'FFD97706' } };
+      if (colNum === 4) cell.font = { bold: true, size: 12, color: { argb: 'FFEA580C' } };
+      if (colNum === 6) cell.font = { bold: true, size: 12, color: { argb: 'FFDC2626' } };
+    });
+
+    sheet.addRow([]); // Blank row
+
+    // Table Header
+    const tableHeaderRow = sheet.addRow([
+      '#',
+      'Student ID',
+      'Student Full Name',
+      'Institutional Email',
+      'Status',
+      'Auth Method',
+      'Check-in Time (12-Hour)',
+      'Override?',
+      'Remarks / Punctuality Detail',
+    ]);
+    tableHeaderRow.height = 24;
+
+    tableHeaderRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    // Populate Roster Rows
+    roster.forEach((item) => {
+      const row = sheet.addRow([
+        item.index,
+        item.studentId,
+        item.fullName,
+        item.email,
+        item.status,
+        item.authMethod,
+        item.tapTime,
+        item.isOverride,
+        item.remarks,
+      ]);
+
+      row.getCell(1).alignment = { horizontal: 'center' };
+      row.getCell(2).alignment = { horizontal: 'center' };
+      row.getCell(5).alignment = { horizontal: 'center' };
+      row.getCell(6).alignment = { horizontal: 'center' };
+      row.getCell(7).alignment = { horizontal: 'center' };
+      row.getCell(8).alignment = { horizontal: 'center' };
+
+      // Status color formatting
+      const statusCell = row.getCell(5);
+      statusCell.font = { bold: true };
+      switch (item.status) {
+        case 'PRESENT':
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCFCE7' } };
+          statusCell.font = { color: { argb: 'FF15803D' }, bold: true };
+          break;
+        case 'LATE':
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF9C3' } };
+          statusCell.font = { color: { argb: 'FFA16207' }, bold: true };
+          break;
+        case 'CUT':
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEDD5' } };
+          statusCell.font = { color: { argb: 'FFC2410C' }, bold: true };
+          break;
+        case 'EXCUSED':
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+          statusCell.font = { color: { argb: 'FF1D4ED8' }, bold: true };
+          break;
+        case 'ABSENT':
+        default:
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+          statusCell.font = { color: { argb: 'FFB91C1C' }, bold: true };
+          break;
+      }
+    });
+
+    // Auto-fit column widths
+    sheet.columns = [
+      { key: 'index', width: 6 },
+      { key: 'studentId', width: 16 },
+      { key: 'fullName', width: 26 },
+      { key: 'email', width: 30 },
+      { key: 'status', width: 14 },
+      { key: 'authMethod', width: 18 },
+      { key: 'tapTime', width: 22 },
+      { key: 'isOverride', width: 12 },
+      { key: 'remarks', width: 32 },
+    ];
+
+    await workbook.xlsx.writeFile(filePath);
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    return buffer;
+  }
+
+  /**
+   * Generates formatted PDF Master Attendance Report using PDFKit
    */
   private async generatePdfFile(
     filePath: string,
@@ -215,8 +466,8 @@ export class ReportService {
 
       doc.font('Helvetica-Bold').fontSize(8).fillColor(textMuted).text('HARDWARE TERMINAL:', col3X, metaY);
       doc.font('Helvetica-Bold').fontSize(10).fillColor(brandDark).text(`${session.terminalId} (${session.section.roomNumber})`, col3X, metaY + 11);
-      const startFmt = new Date(session.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const endFmt = session.endTime ? new Date(session.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Ongoing';
+      const startFmt = this.format12HourShort(session.startTime);
+      const endFmt = session.endTime ? this.format12HourShort(session.endTime) : 'Ongoing';
       doc.font('Helvetica').fontSize(8).fillColor(textMuted).text(`Session Time: ${startFmt} - ${endFmt}`, col3X, metaY + 23);
 
       // --- KPI STATS BOXES ---
@@ -249,15 +500,14 @@ export class ReportService {
       doc.text('#', 42, tableY + 6);
       doc.text('STUDENT ID', 58, tableY + 6);
       doc.text('FULL NAME', 140, tableY + 6);
-      doc.text('TIME', 280, tableY + 6);
-      doc.text('METHOD', 330, tableY + 6);
-      doc.text('STATUS', 400, tableY + 6);
-      doc.text('REMARKS', 460, tableY + 6);
+      doc.text('TIME (12H)', 280, tableY + 6);
+      doc.text('METHOD', 340, tableY + 6);
+      doc.text('STATUS', 410, tableY + 6);
+      doc.text('REMARKS', 465, tableY + 6);
 
       tableY += 20;
 
       roster.forEach((row, i) => {
-        // Page break handling
         if (tableY > 750) {
           doc.addPage();
           tableY = 40;
@@ -266,10 +516,10 @@ export class ReportService {
           doc.text('#', 42, tableY + 6);
           doc.text('STUDENT ID', 58, tableY + 6);
           doc.text('FULL NAME', 140, tableY + 6);
-          doc.text('TIME', 280, tableY + 6);
-          doc.text('METHOD', 330, tableY + 6);
-          doc.text('STATUS', 400, tableY + 6);
-          doc.text('REMARKS', 460, tableY + 6);
+          doc.text('TIME (12H)', 280, tableY + 6);
+          doc.text('METHOD', 340, tableY + 6);
+          doc.text('STATUS', 410, tableY + 6);
+          doc.text('REMARKS', 465, tableY + 6);
           tableY += 20;
         }
 
@@ -281,7 +531,7 @@ export class ReportService {
         doc.font('Helvetica-Bold').text(row.studentId, 58, tableY + 5);
         doc.font('Helvetica').text(row.fullName, 140, tableY + 5);
         doc.text(row.tapTime, 280, tableY + 5);
-        doc.text(row.authMethod, 330, tableY + 5);
+        doc.text(row.authMethod, 340, tableY + 5);
 
         // Status badge color
         let statusColor = '#065F46';
@@ -290,8 +540,8 @@ export class ReportService {
         if (row.status === 'ABSENT') statusColor = '#991B1B';
         if (row.status === 'EXCUSED') statusColor = '#1E40AF';
 
-        doc.font('Helvetica-Bold').fillColor(statusColor).text(row.status, 400, tableY + 5);
-        doc.font('Helvetica').fontSize(7).fillColor(textMuted).text(row.remarks.slice(0, 22), 460, tableY + 5);
+        doc.font('Helvetica-Bold').fillColor(statusColor).text(row.status, 410, tableY + 5);
+        doc.font('Helvetica').fontSize(7).fillColor(textMuted).text(row.remarks.slice(0, 22), 465, tableY + 5);
 
         tableY += 18;
       });
@@ -300,8 +550,9 @@ export class ReportService {
       const footerY = 780;
       doc.moveTo(36, footerY).lineTo(559, footerY).strokeColor(borderLine).stroke();
       doc.fillColor(textMuted).font('Helvetica').fontSize(7);
+      const generatedAtFmt = new Date().toLocaleString('en-US', { hour12: true });
       doc.text(
-        `Generated: ${new Date().toLocaleString()} | ORCHESTRA Edge-Cloud System | Anti-Proxy Verification Validated`,
+        `Generated: ${generatedAtFmt} | ORCHESTRA Edge-Cloud System | Anti-Proxy Verification Validated`,
         36,
         footerY + 6
       );
