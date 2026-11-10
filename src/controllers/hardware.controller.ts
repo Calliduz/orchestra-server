@@ -88,12 +88,14 @@ export class HardwareController {
   /**
    * GET /api/v1/hardware/status/:terminalId
    * Quick status ping for ESP32 OLED state machine
+   * Includes local copy of authorized faculty UIDs for offline session unlock/lock
    */
   async getTerminalStatus(req: Request, res: Response): Promise<void> {
     try {
       const terminalId = req.params.terminalId as string;
       const sessionData = await sessionService.getActiveSession(terminalId);
       const enrollment = hardwareService.getEnrollmentSession(terminalId);
+      const authorizedFaculty = await hardwareService.getAuthorizedFaculty(terminalId);
 
       res.status(200).json({
         success: true,
@@ -101,6 +103,8 @@ export class HardwareController {
         isLocked: sessionData.isLocked,
         status: sessionData.status,
         enrollment,
+        authorizedFaculty, // Local copy of professor/admin UIDs for offline caching
+        offlineSyncSupported: true,
         session: sessionData.session
           ? {
               id: sessionData.session.id,
@@ -115,6 +119,28 @@ export class HardwareController {
       res.status(500).json({
         success: false,
         message: err.message || 'Error fetching terminal status',
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/hardware/offline-sync
+   * Ingests batch of offline attendance logs recorded on ESP32 during network outage
+   */
+  async handleOfflineSync(req: Request, res: Response): Promise<void> {
+    try {
+      const { terminalId = 'TERM-CL304', sessionAction = 'CONTINUE', facultyUid, records } = req.body;
+      const result = await hardwareService.processOfflineSync(terminalId, {
+        sessionAction,
+        facultyUid,
+        records: Array.isArray(records) ? records : [],
+      });
+      res.status(result.statusCode || 200).json(result);
+    } catch (err: any) {
+      console.error('Error in handleOfflineSync:', err);
+      res.status(500).json({
+        success: false,
+        message: err.message || 'Internal server error processing offline sync',
       });
     }
   }

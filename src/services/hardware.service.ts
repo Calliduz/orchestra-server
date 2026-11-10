@@ -89,6 +89,326 @@ export class HardwareService {
   getLastScanned() {
     return this.lastScannedCard;
   }
+
+  /**
+   * Returns list of authorized faculty instructor UIDs and admin UIDs for a terminal
+   * Cached by ESP32 in local NVS storage to allow offline session unlock/lock
+   */
+  async getAuthorizedFaculty(terminalId: string) {
+    const sections = await prisma.section.findMany({
+      where: { terminalId },
+      include: {
+        faculty: {
+          select: { id: true, firstName: true, lastName: true, email: true, rfidUid: true, role: true, department: true },
+        },
+      },
+    });
+
+    const admins = await prisma.user.findMany({
+      where: { role: Role.ADMIN, rfidUid: { not: null } },
+      select: { id: true, firstName: true, lastName: true, email: true, rfidUid: true, role: true, department: true },
+    });
+
+    const facultyMap = new Map<string, { rfidUid: string; name: string; role: Role; department: string | null }>();
+
+    // Baseline fallback faculty: Prof. Macadat
+    facultyMap.set('892B2E8E', {
+      rfidUid: '892B2E8E',
+      name: 'Karlito Macadat',
+      role: Role.FACULTY,
+      department: 'College of Computer Studies',
+    });
+
+    // Baseline fallback faculty: Prof. Agbada
+    facultyMap.set('71394417', {
+      rfidUid: '71394417',
+      name: 'Justine Jay Agbada',
+      role: Role.FACULTY,
+      department: 'College of Computer Studies',
+    });
+
+    // Baseline fallback admin
+    facultyMap.set('99AA88BB', {
+      rfidUid: '99AA88BB',
+      name: 'System Administrator',
+      role: Role.ADMIN,
+      department: 'IT Infrastructure Division',
+    });
+
+    for (const s of sections) {
+      if (s.faculty && s.faculty.rfidUid) {
+        const cleanUid = this.normalizeRfid(s.faculty.rfidUid);
+        facultyMap.set(cleanUid, {
+          rfidUid: cleanUid,
+          name: `${s.faculty.firstName} ${s.faculty.lastName}`,
+          role: s.faculty.role,
+          department: s.faculty.department,
+        });
+      }
+    }
+
+    for (const a of admins) {
+      if (a.rfidUid) {
+        const cleanUid = this.normalizeRfid(a.rfidUid);
+        facultyMap.set(cleanUid, {
+          rfidUid: cleanUid,
+          name: `${a.firstName} ${a.lastName}`,
+          role: a.role,
+          department: a.department,
+        });
+      }
+    }
+
+    return Array.from(facultyMap.values());
+  }
+
+  /**
+   * Processes a batch of offline attendance logs queued on the ESP32 terminal during network outage
+   */
+  async processOfflineSync(
+    terminalId: string,
+    payload: {
+      sessionAction?: 'START' | 'CLOSE' | 'CONTINUE';
+      facultyUid?: string;
+      records: Array<{
+        rfidUid: string;
+        timestamp?: string;
+        authMethod?: string;
+      }>;
+    }
+  ) {
+    console.log(
+      `\n🔄 [OFFLINE SYNC INGRESS] Terminal: ${terminalId} | Records: ${payload.records?.length || 0} | Action: ${
+        payload.sessionAction || 'CONTINUE'
+      }\n`
+    );
+
+    const records = payload.records || [];
+    let syncedCount = 0;
+    let duplicateCount = 0;
+    let notEnrolledCount = 0;
+
+    // 1. Identify active session for this terminal
+    let activeSession = await prisma.session.findFirst({
+      where: {
+        terminalId,
+        status: SessionStatus.OPEN,
+      },
+      include: {
+        section: {
+          include: {
+            enrollments: true,
+          },
+        },
+        faculty: true,
+      },
+      orderBy: { startTime: 'desc' },
+    });
+
+    // If terminal opened session offline, find faculty and create the session
+    if (!activeSession && payload.facultyUid) {
+      const cleanFacultyUid = this.normalizeRfid(payload.facultyUid);
+      const faculty = await prisma.user.findUnique({
+        where: { rfidUid: cleanFacultyUid },
+      });
+
+      if (faculty && (faculty.role === Role.FACULTY || faculty.role === Role.ADMIN)) {
+        let section = await prisma.section.findFirst({
+          where: { terminalId, facultyId: faculty.id },
+          include: { enrollments: true },
+        });
+
+        if (!section) {
+          section = await prisma.section.findFirst({
+            where: { terminalId },
+            include: { enrollments: true },
+          });
+        }
+
+        if (section) {
+          const earliestTime =
+            records.length > 0 && records[0].timestamp ? new Date(records[0].timestamp) : new Date();
+
+          activeSession = await prisma.session.create({
+            data: {
+              sectionId: section.id,
+              facultyId: faculty.id,
+              terminalId,
+              status: SessionStatus.OPEN,
+              startTime: earliestTime,
+              lateThresholdMins: section.defaultLateThresholdMins,
+              cutThresholdMins: section.defaultCutThresholdMins,
+            },
+            include: {
+              section: {
+                include: {
+                  enrollments: true,
+                },
+              },
+              faculty: true,
+            },
+          });
+
+          const activeDetails = await sessionService.getActiveSession(terminalId);
+
+          emitSessionStarted({
+            sessionId: activeSession.id,
+            terminalId,
+            sectionCode: section.sectionCode,
+            courseName: section.courseName,
+            roomNumber: section.roomNumber,
+            facultyName:
+              faculty.role === Role.ADMIN
+                ? `${faculty.firstName} ${faculty.lastName}`
+                : `Prof. ${faculty.firstName} ${faculty.lastName}`,
+            startTime: activeSession.startTime.toISOString(),
+            lateThresholdMins: activeSession.lateThresholdMins,
+            cutThresholdMins: activeSession.cutThresholdMins,
+            totalEnrolled: activeDetails.stats.totalEnrolled,
+            roster: activeDetails.roster,
+          });
+          console.log(`✨ [OFFLINE SYNC] Resurrected offline session ${activeSession.id} for ${section.sectionCode}`);
+        }
+      }
+    }
+
+    if (!activeSession) {
+      // Fallback: Check most recent session for this terminal
+      const recentSession = await prisma.session.findFirst({
+        where: { terminalId },
+        include: {
+          section: {
+            include: { enrollments: true },
+          },
+          faculty: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (recentSession) {
+        activeSession = recentSession;
+      }
+    }
+
+    if (!activeSession) {
+      return {
+        statusCode: 404,
+        success: false,
+        message: `No active or configured session found for terminal ${terminalId}.`,
+        syncedCount: 0,
+        duplicateCount: 0,
+        totalReceived: records.length,
+      };
+    }
+
+    // 2. Process all offline attendance records sequentially
+    const enrolledStudentIds = new Set(activeSession.section.enrollments.map((e) => e.studentId));
+
+    for (const rec of records) {
+      const cleanUid = this.normalizeRfid(rec.rfidUid);
+      const student = await prisma.user.findUnique({
+        where: { rfidUid: cleanUid },
+      });
+
+      if (!student) {
+        console.warn(`[OFFLINE SYNC] Unregistered badge 0x${cleanUid} skipped.`);
+        continue;
+      }
+
+      if (!enrolledStudentIds.has(student.id)) {
+        notEnrolledCount++;
+        console.warn(
+          `[OFFLINE SYNC] Student ${student.firstName} ${student.lastName} not enrolled in ${activeSession.section.sectionCode}.`
+        );
+        continue;
+      }
+
+      // Check anti-passback in this session
+      const existingLog = await prisma.attendanceLog.findUnique({
+        where: {
+          sessionId_studentId: {
+            sessionId: activeSession.id,
+            studentId: student.id,
+          },
+        },
+      });
+
+      if (existingLog) {
+        duplicateCount++;
+        continue;
+      }
+
+      // Calculate status based on tap timestamp vs session start
+      const tapTime = rec.timestamp ? new Date(rec.timestamp) : new Date();
+      const elapsedMins = Math.max(0, (tapTime.getTime() - activeSession.startTime.getTime()) / (1000 * 60));
+
+      let status: AttendanceStatus = AttendanceStatus.PRESENT;
+      if (elapsedMins > activeSession.cutThresholdMins) {
+        status = AttendanceStatus.CUT;
+      } else if (elapsedMins > activeSession.lateThresholdMins) {
+        status = AttendanceStatus.LATE;
+      }
+
+      await prisma.attendanceLog.create({
+        data: {
+          sessionId: activeSession.id,
+          studentId: student.id,
+          status,
+          authMethod: (rec.authMethod as AuthMethod) || AuthMethod.RFID_TAP,
+          tapTimestamp: tapTime,
+          reverseReceiptSent: false,
+        },
+      });
+
+      syncedCount++;
+
+      // Dispatch reverse-receipt in background
+      mailerService
+        .sendReverseReceipt({
+          logId: student.id,
+          studentEmail: student.email,
+          studentName: `${student.firstName} ${student.lastName}`,
+          sectionCode: activeSession.section.sectionCode,
+          courseName: activeSession.section.courseName,
+          roomNumber: activeSession.section.roomNumber,
+          tapTime,
+          authMethod: 'Offline RFID Tap (Auto-Synced)',
+        })
+        .catch(() => {});
+    }
+
+    // Refresh telemetry and emit update to React dashboard
+    const activeDetails = await sessionService.getActiveSession(terminalId);
+    emitAttendanceUpdated({
+      sessionId: activeSession.id,
+      terminalId,
+      studentId: '',
+      studentNumber: '',
+      studentName: 'BATCH_OFFLINE_SYNC',
+      status: AttendanceStatus.PRESENT,
+      authMethod: AuthMethod.RFID_TAP,
+      tapTimestamp: new Date().toISOString(),
+      isManualOverride: false,
+      stats: activeDetails.stats,
+      roster: activeDetails.roster,
+    });
+
+    // If professor ended the session while offline, finalize it
+    if (payload.sessionAction === 'CLOSE' && activeSession.status === SessionStatus.OPEN) {
+      await sessionService.closeSession(activeSession.id);
+    }
+
+    return {
+      statusCode: 200,
+      success: true,
+      message: `Successfully synced ${syncedCount} offline record(s). (${duplicateCount} duplicate(s) rejected under anti-passback)`,
+      syncedCount,
+      duplicateCount,
+      notEnrolledCount,
+      totalReceived: records.length,
+      sessionId: activeSession.id,
+    };
+  }
   /**
    * Normalizes raw RFID UID strings from hardware (removes spaces, colons, lower-case)
    */
