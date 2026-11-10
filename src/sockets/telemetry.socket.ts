@@ -156,3 +156,14 @@ export function emitCardScanned(payload: {
   console.log(`📢 Broadcasting [card:scanned] UID: ${payload.rfidUid} (Registered: ${payload.isRegistered})`);
   io.emit('card:scanned', payload);
 }
+
+export function emitEnrollmentModeChanged(payload: {
+  active: boolean;
+  terminalId?: string;
+  targetRole?: string;
+  targetName?: string;
+}) {
+  if (!io) return;
+  console.log(`📢 Broadcasting [enrollment:mode] active=${payload.active} (Role: ${payload.targetRole || 'STUDENT'})`);
+  io.emit('enrollment:mode', payload);
+}

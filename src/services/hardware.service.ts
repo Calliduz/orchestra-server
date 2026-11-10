@@ -2,7 +2,7 @@ import { SessionStatus, AttendanceStatus, AuthMethod, Role } from '@prisma/clien
 import prisma from '../config/prisma.js';
 import { sessionService } from './session.service.js';
 import { mailerService } from './mailer.service.js';
-import { emitSessionStarted, emitAttendanceUpdated, emitCardScanned } from '../sockets/telemetry.socket.js';
+import { emitSessionStarted, emitAttendanceUpdated, emitCardScanned, emitEnrollmentModeChanged } from '../sockets/telemetry.socket.js';
 
 export interface HardwareTapResult {
   statusCode: number;
@@ -16,9 +16,17 @@ export interface HardwareTapResult {
     | 'NOT_SESSION_OWNER'
     | 'ALREADY_RECORDED'
     | 'UNREGISTERED_CARD'
+    | 'ENROLLMENT_CAPTURED'
     | 'ERROR';
   message: string;
   data?: any;
+}
+
+export interface EnrollmentSession {
+  terminalId: string;
+  targetRole: 'STUDENT' | 'FACULTY' | 'ADMIN';
+  targetName?: string;
+  startedAt: string;
 }
 
 export class HardwareService {
@@ -29,6 +37,53 @@ export class HardwareService {
     isRegistered: boolean;
     cardHolder: any;
   } | null = null;
+
+  private activeEnrollment: EnrollmentSession | null = null;
+
+  startEnrollmentSession(
+    terminalId: string = 'TERM-CL304',
+    targetRole: 'STUDENT' | 'FACULTY' | 'ADMIN' = 'STUDENT',
+    targetName?: string
+  ): EnrollmentSession {
+    this.activeEnrollment = {
+      terminalId,
+      targetRole,
+      targetName,
+      startedAt: new Date().toISOString(),
+    };
+    console.log(`🎯 [ENROLLMENT SESSION STARTED] Terminal: ${terminalId} | Target Role: ${targetRole}`);
+    emitEnrollmentModeChanged({
+      active: true,
+      terminalId,
+      targetRole,
+      targetName,
+    });
+    return this.activeEnrollment;
+  }
+
+  stopEnrollmentSession(terminalId?: string): void {
+    console.log(`⏹️ [ENROLLMENT SESSION STOPPED] Terminal: ${terminalId || this.activeEnrollment?.terminalId}`);
+    this.activeEnrollment = null;
+    emitEnrollmentModeChanged({
+      active: false,
+      terminalId: terminalId || 'TERM-CL304',
+    });
+  }
+
+  getEnrollmentSession(terminalId?: string) {
+    if (this.activeEnrollment) {
+      if (!terminalId || this.activeEnrollment.terminalId === terminalId) {
+        return {
+          active: true,
+          terminalId: this.activeEnrollment.terminalId,
+          targetRole: this.activeEnrollment.targetRole,
+          targetName: this.activeEnrollment.targetName,
+          startedAt: this.activeEnrollment.startedAt,
+        };
+      }
+    }
+    return { active: false };
+  }
 
   getLastScanned() {
     return this.lastScannedCard;
@@ -95,6 +150,28 @@ export class HardwareService {
           }
         : undefined,
     });
+
+    // -----------------------------------------------------------------
+    // SPECIAL ENROLLMENT MODE: Admin is actively scanning to add student/faculty
+    // -----------------------------------------------------------------
+    if (this.activeEnrollment && (!this.activeEnrollment.terminalId || this.activeEnrollment.terminalId === terminalId)) {
+      console.log(`✨ [ENROLLMENT INTERCEPT] Live card 0x${cleanRfid} captured for new ${this.activeEnrollment.targetRole}!`);
+      return {
+        statusCode: 200,
+        success: true,
+        code: 'ENROLLMENT_CAPTURED',
+        message: cardHolder
+          ? `Badge 0x${cleanRfid} is already assigned to ${cardHolder.firstName} ${cardHolder.lastName}`
+          : `Badge 0x${cleanRfid} captured live for new ${this.activeEnrollment.targetRole}`,
+        data: {
+          rfidUid: cleanRfid,
+          isRegistered: !!cardHolder,
+          cardHolderName: cardHolder ? `${cardHolder.firstName} ${cardHolder.lastName}` : null,
+          targetRole: this.activeEnrollment.targetRole,
+          targetName: this.activeEnrollment.targetName,
+        },
+      };
+    }
 
     // -----------------------------------------------------------------
     // CASE 1: TERMINAL IS IN LOCKED STATE (No Active Session)

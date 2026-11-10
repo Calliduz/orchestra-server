@@ -93,12 +93,14 @@ export class HardwareController {
     try {
       const terminalId = req.params.terminalId as string;
       const sessionData = await sessionService.getActiveSession(terminalId);
+      const enrollment = hardwareService.getEnrollmentSession(terminalId);
 
       res.status(200).json({
         success: true,
         terminalId,
         isLocked: sessionData.isLocked,
         status: sessionData.status,
+        enrollment,
         session: sessionData.session
           ? {
               id: sessionData.session.id,
@@ -115,6 +117,46 @@ export class HardwareController {
         message: err.message || 'Error fetching terminal status',
       });
     }
+  }
+
+  /**
+   * POST /api/v1/hardware/enrollment/start
+   * Start live admin scanning session for new student or faculty
+   */
+  startEnrollment(req: Request, res: Response): void {
+    const { terminalId = 'TERM-CL304', targetRole = 'STUDENT', targetName } = req.body;
+    const session = hardwareService.startEnrollmentSession(terminalId, targetRole, targetName);
+    res.status(200).json({
+      success: true,
+      message: `Enrollment mode armed on ${terminalId} for ${targetRole}`,
+      data: session,
+    });
+  }
+
+  /**
+   * POST /api/v1/hardware/enrollment/stop
+   * Stop live admin scanning session
+   */
+  stopEnrollment(req: Request, res: Response): void {
+    const { terminalId } = req.body;
+    hardwareService.stopEnrollmentSession(terminalId);
+    res.status(200).json({
+      success: true,
+      message: 'Enrollment mode disarmed',
+    });
+  }
+
+  /**
+   * GET /api/v1/hardware/enrollment/status/:terminalId?
+   * Get active enrollment session state
+   */
+  getEnrollmentStatus(req: Request, res: Response): void {
+    const terminalId = req.params.terminalId as string;
+    const status = hardwareService.getEnrollmentSession(terminalId);
+    res.status(200).json({
+      success: true,
+      data: status,
+    });
   }
 
   /**
