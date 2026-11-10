@@ -208,6 +208,35 @@ export class EnrollmentController {
       res.status(500).json({ success: false, message: err.message });
     }
   }
+
+  /**
+   * POST /api/v1/enrollments/bulk-unenroll
+   * Admin-only: Mass unenroll students from section
+   */
+  async bulkUnenroll(req: Request, res: Response): Promise<void> {
+    try {
+      const { studentIds, sectionId } = req.body;
+      if (!Array.isArray(studentIds) || !sectionId) {
+        res.status(400).json({ success: false, message: 'studentIds array and sectionId are required' });
+        return;
+      }
+
+      const result = await prisma.enrollment.deleteMany({
+        where: {
+          studentId: { in: studentIds },
+          sectionId,
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: `Successfully unenrolled ${result.count} students from section.`,
+        data: { count: result.count },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  }
 }
 
 export const enrollmentController = new EnrollmentController();

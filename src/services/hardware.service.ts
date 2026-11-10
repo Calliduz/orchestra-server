@@ -14,6 +14,7 @@ export interface HardwareTapResult {
     | 'SESSION_LOCKED'
     | 'NOT_ENROLLED'
     | 'NOT_SESSION_OWNER'
+    | 'UNAUTHORIZED_FACULTY'
     | 'ALREADY_RECORDED'
     | 'UNREGISTERED_CARD'
     | 'ENROLLMENT_CAPTURED'
@@ -203,30 +204,31 @@ export class HardwareService {
         include: { faculty: true },
       });
 
-      // 2. Fallback: check if this faculty has any section assigned to them
-      if (!section) {
-        section = await prisma.section.findFirst({
-          where: { facultyId: cardHolder.id },
-          include: { faculty: true },
-        });
-      }
-
-      // 3. Fallback: check if this terminal has any active section (e.g. substitute/guest instructor)
-      if (!section) {
+      // 2. If cardHolder is ADMIN, allow unlocking the terminal's configured section
+      if (!section && cardHolder.role === Role.ADMIN) {
         section = await prisma.section.findFirst({
           where: { terminalId },
           include: { faculty: true },
         });
       }
 
-      // 4. Fallback: grab any existing section in the system
+      // 3. Security Boundary: If this terminal belongs to another faculty, REJECT unauthorized faculty!
       if (!section) {
-        section = await prisma.section.findFirst({
+        const assignedSection = await prisma.section.findFirst({
+          where: { terminalId },
           include: { faculty: true },
         });
-      }
 
-      if (!section) {
+        if (assignedSection && assignedSection.facultyId !== cardHolder.id) {
+          console.warn(`⚠️ [UNAUTHORIZED FACULTY TAP] Prof. ${cardHolder.lastName} attempted to access terminal ${terminalId} assigned to Prof. ${assignedSection.faculty.lastName}`);
+          return {
+            statusCode: 403,
+            success: false,
+            code: 'UNAUTHORIZED_FACULTY',
+            message: `ACCESS DENIED: Room ${assignedSection.roomNumber} is assigned to Prof. ${assignedSection.faculty.lastName}. You are not authorized for this terminal.`,
+          };
+        }
+
         return {
           statusCode: 404,
           success: false,
@@ -307,7 +309,7 @@ export class HardwareService {
         return {
           statusCode: 403,
           success: false,
-          code: 'NOT_SESSION_OWNER',
+          code: 'UNAUTHORIZED_FACULTY',
           message: `ACCESS DENIED: Session was initiated by Prof. ${activeSession.faculty.lastName}. Only they or an administrator can end this session.`,
         };
       }

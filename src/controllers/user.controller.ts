@@ -10,7 +10,7 @@ const updateRfidSchema = z.object({
 
 const createUserSchema = z.object({
   email: z.string().email('Invalid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  password: z.string().min(6, 'Password must be at least 6 characters').optional(),
   firstName: z.string().min(1, 'First name is required'),
   lastName: z.string().min(1, 'Last name is required'),
   role: z.nativeEnum(Role, { errorMap: () => ({ message: 'Invalid role' }) }).default(Role.STUDENT),
@@ -178,7 +178,8 @@ export class UserController {
         }
       }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
+      const rawPassword = password || (role === Role.STUDENT ? 'StudentPass123!' : 'Password123!');
+      const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
       const user = await prisma.user.create({
         data: {
