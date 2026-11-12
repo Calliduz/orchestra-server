@@ -381,7 +381,7 @@ export class HardwareService {
     const enrolledStudentIds = new Set(activeSession.section.enrollments.map((e) => e.studentId));
 
     for (const rec of records) {
-      const cleanUid = this.normalizeRfid(rec.rfidUid);
+      const cleanUid = this.normalizeRfid(rec.rfidUid || rec.cardUid);
       const student = await prisma.user.findUnique({
         where: { rfidUid: cleanUid },
       });

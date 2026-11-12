@@ -11,7 +11,10 @@ const tapSchema = z.object({
 
 const otpSchema = z.object({
   terminalId: z.string().min(1, 'Terminal ID is required'),
-  code: z.string().min(6, 'OTP must be 6 digits').max(6, 'OTP must be 6 digits'),
+  code: z.string().min(6, 'OTP must be 6 digits').max(6, 'OTP must be 6 digits').optional(),
+  otp: z.string().min(6, 'OTP must be 6 digits').max(6, 'OTP must be 6 digits').optional(),
+}).refine((data) => data.code || data.otp, {
+  message: 'OTP PIN (code or otp) is required',
 });
 
 export class HardwareController {
@@ -66,8 +69,9 @@ export class HardwareController {
         return;
       }
 
-      const { terminalId, code } = parsed.data;
-      const result = await otpService.verifyKeypadOtp(terminalId, code);
+      const { terminalId } = parsed.data;
+      const pin = (parsed.data.code || parsed.data.otp)!;
+      const result = await otpService.verifyKeypadOtp(terminalId, pin);
 
       res.status(result.statusCode).json({
         success: result.success,
