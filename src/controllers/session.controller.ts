@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { AttendanceStatus, Role, SessionStatus } from '@prisma/client';
 import { sessionService } from '../services/session.service.js';
+import { hardwareService } from '../services/hardware.service.js';
 import { reportService } from '../services/report.service.js';
 import { mailerService } from '../services/mailer.service.js';
 import { emitSessionStarted } from '../sockets/telemetry.socket.js';
@@ -275,6 +276,9 @@ export class SessionController {
       }
 
       const result = await sessionService.closeSession(id);
+      if (session.terminalId) {
+        hardwareService.recordTerminalClosed(session.terminalId);
+      }
       res.status(200).json({
         success: true,
         message: 'Class session closed. Attendance finalized and reports compiled.',

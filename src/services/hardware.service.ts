@@ -41,6 +41,14 @@ export class HardwareService {
 
   private activeEnrollment: EnrollmentSession | null = null;
 
+  // Interlock tracker: Prevents rapid re-opening if terminal was recently closed
+  private terminalLastClosed = new Map<string, number>();
+
+  public recordTerminalClosed(terminalId: string): void {
+    this.terminalLastClosed.set(terminalId, Date.now());
+    console.log(`🔒 [LOCKOUT INTERLOCK] Terminal ${terminalId} marked recently closed at ${new Date().toISOString()}`);
+  }
+
   /**
    * Safely parses an ISO date string into a valid Date object.
    * If string is malformed or invalid, safely defaults to current date.
@@ -222,7 +230,8 @@ export class HardwareService {
     });
 
     // If terminal opened session offline, find faculty and create the session
-    if (!activeSession && payload.facultyUid) {
+    // CRITICAL FIX: Only create OPEN session if sessionAction is explicitly 'START'
+    if (!activeSession && payload.facultyUid && payload.sessionAction === 'START') {
       const cleanFacultyUid = this.normalizeRfid(payload.facultyUid);
       const faculty = await prisma.user.findUnique({
         where: { rfidUid: cleanFacultyUid },
@@ -284,6 +293,57 @@ export class HardwareService {
             roster: activeDetails.roster,
           });
           console.log(`✨ [OFFLINE SYNC] Resurrected offline session ${activeSession.id} for ${section.sectionCode}`);
+        }
+      }
+    } else if (!activeSession && payload.facultyUid && payload.sessionAction === 'CLOSE') {
+      // Session was opened AND closed offline while network was down.
+      // Create directly as CLOSED so it is archived cleanly without spuriously unlocking the terminal!
+      const cleanFacultyUid = this.normalizeRfid(payload.facultyUid);
+      const faculty = await prisma.user.findUnique({
+        where: { rfidUid: cleanFacultyUid },
+      });
+
+      if (faculty && (faculty.role === Role.FACULTY || faculty.role === Role.ADMIN)) {
+        let section = await prisma.section.findFirst({
+          where: { terminalId, facultyId: faculty.id },
+          include: { enrollments: true },
+        });
+
+        if (!section) {
+          section = await prisma.section.findFirst({
+            where: { terminalId },
+            include: { enrollments: true },
+          });
+        }
+
+        if (section) {
+          const earliestTime =
+            records.length > 0 ? this.parseValidDate(records[0].timestamp) : new Date();
+          const latestTime =
+            records.length > 0 ? this.parseValidDate(records[records.length - 1].timestamp) : new Date();
+
+          activeSession = await prisma.session.create({
+            data: {
+              sectionId: section.id,
+              facultyId: faculty.id,
+              terminalId,
+              status: SessionStatus.CLOSED,
+              startTime: earliestTime,
+              endTime: latestTime,
+              lateThresholdMins: section.defaultLateThresholdMins,
+              cutThresholdMins: section.defaultCutThresholdMins,
+            },
+            include: {
+              section: {
+                include: {
+                  enrollments: true,
+                },
+              },
+              faculty: true,
+            },
+          });
+          this.recordTerminalClosed(terminalId);
+          console.log(`📁 [OFFLINE SYNC] Ingested completed offline session ${activeSession.id} directly as CLOSED.`);
         }
       }
     }
@@ -412,6 +472,7 @@ export class HardwareService {
     // If professor ended the session while offline, finalize it
     if (payload.sessionAction === 'CLOSE' && activeSession.status === SessionStatus.OPEN) {
       await sessionService.closeSession(activeSession.id);
+      this.recordTerminalClosed(terminalId);
     }
 
     return {
@@ -533,6 +594,19 @@ export class HardwareService {
         };
       }
 
+      // Interlock Guard: If terminal was locked within the last 4000ms, suppress immediate restart
+      const lastClosed = this.terminalLastClosed.get(terminalId) || 0;
+      const elapsedSinceClose = Date.now() - lastClosed;
+      if (elapsedSinceClose < 4000) {
+        console.warn(`⏳ [DEBOUNCE] Terminal ${terminalId} was locked ${elapsedSinceClose}ms ago. Suppressing rapid re-open.`);
+        return {
+          statusCode: 200,
+          success: false,
+          code: 'SESSION_LOCKED',
+          message: 'Terminal locked. Please remove badge before starting a new session.',
+        };
+      }
+
       // If Faculty or Admin scans master badge -> UNLOCK TERMINAL & OPEN SESSION
       // 1. Try finding section specifically assigned to this faculty on this terminal
       let section = await prisma.section.findFirst({
@@ -651,6 +725,7 @@ export class HardwareService {
       }
 
       const closeResult = await sessionService.closeSession(activeSession.id);
+      this.recordTerminalClosed(terminalId);
 
       return {
         statusCode: 200,
