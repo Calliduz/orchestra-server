@@ -6,8 +6,8 @@ import { Role } from '@prisma/client';
 const router = Router();
 
 // Retrieve all users (admin or faculty can view student rosters)
-router.get('/', (req, res) => userController.getAllUsers(req, res));
-router.get('/:id', (req, res) => userController.getUserById(req, res));
+router.get('/', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => userController.getAllUsers(req, res));
+router.get('/:id', requireAuth, (req, res) => userController.getUserById(req, res));
 
 // Admin-only management endpoints
 router.post('/', requireAuth, requireRole(Role.ADMIN), (req, res) => userController.createUser(req, res));

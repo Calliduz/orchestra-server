@@ -6,7 +6,7 @@ import { Role } from '@prisma/client';
 const router = Router();
 
 // Section roster view (available to faculty & admin)
-router.get('/section/:sectionId', (req, res) => enrollmentController.getEnrollmentsBySection(req, res));
+router.get('/section/:sectionId', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => enrollmentController.getEnrollmentsBySection(req, res));
 
 // Admin-only enrollment mutations
 router.post('/', requireAuth, requireRole(Role.ADMIN), (req, res) => enrollmentController.enrollStudent(req, res));

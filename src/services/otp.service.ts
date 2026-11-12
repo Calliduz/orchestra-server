@@ -268,27 +268,39 @@ export class OtpService {
 
     // 6. Record attendance log
     let attendanceLog;
-    if (existingLog) {
-      attendanceLog = await prisma.attendanceLog.update({
-        where: { id: existingLog.id },
-        data: {
-          status,
-          authMethod: AuthMethod.KEYPAD_OTP,
-          tapTimestamp: now,
-          reverseReceiptSent: false,
-        },
-      });
-    } else {
-      attendanceLog = await prisma.attendanceLog.create({
-        data: {
-          sessionId: activeSession.id,
-          studentId: student.id,
-          status,
-          authMethod: AuthMethod.KEYPAD_OTP,
-          tapTimestamp: now,
-          reverseReceiptSent: false,
-        },
-      });
+    try {
+      if (existingLog) {
+        attendanceLog = await prisma.attendanceLog.update({
+          where: { id: existingLog.id },
+          data: {
+            status,
+            authMethod: AuthMethod.KEYPAD_OTP,
+            tapTimestamp: now,
+            reverseReceiptSent: false,
+          },
+        });
+      } else {
+        attendanceLog = await prisma.attendanceLog.create({
+          data: {
+            sessionId: activeSession.id,
+            studentId: student.id,
+            status,
+            authMethod: AuthMethod.KEYPAD_OTP,
+            tapTimestamp: now,
+            reverseReceiptSent: false,
+          },
+        });
+      }
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        return {
+          statusCode: 409,
+          success: false,
+          code: 'ALREADY_RECORDED',
+          message: `ANTI-PASSBACK ALERT: ${student.firstName} ${student.lastName} is already checked in.`,
+        };
+      }
+      throw err;
     }
 
     // 7. Asynchronous Reverse-Receipt Notification

@@ -351,31 +351,33 @@ export class UserController {
 
       const cleanRfid = parsed.data.rfidUid.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
-      // Check if this RFID UID is already assigned to another user
-      const existing = await prisma.user.findUnique({
-        where: { rfidUid: cleanRfid },
-      });
-
-      if (existing && existing.id !== id) {
-        // Disassociate previous user to avoid @@unique collision
-        await prisma.user.update({
-          where: { id: existing.id },
-          data: { rfidUid: null },
+      // Atomically reassign RFID UID within a transaction to avoid unique collision and partial state
+      const updated = await prisma.$transaction(async (tx) => {
+        const existing = await tx.user.findUnique({
+          where: { rfidUid: cleanRfid },
         });
-        console.log(`⚠️ Unassigned RFID UID ${cleanRfid} from previous owner: ${existing.firstName} ${existing.lastName}`);
-      }
 
-      const updated = await prisma.user.update({
-        where: { id },
-        data: { rfidUid: cleanRfid },
-        select: {
-          id: true,
-          studentId: true,
-          firstName: true,
-          lastName: true,
-          role: true,
-          rfidUid: true,
-        },
+        if (existing && existing.id !== id) {
+          // Disassociate previous user to avoid @@unique collision
+          await tx.user.update({
+            where: { id: existing.id },
+            data: { rfidUid: null },
+          });
+          console.log(`⚠️ Unassigned RFID UID ${cleanRfid} from previous owner: ${existing.firstName} ${existing.lastName}`);
+        }
+
+        return tx.user.update({
+          where: { id },
+          data: { rfidUid: cleanRfid },
+          select: {
+            id: true,
+            studentId: true,
+            firstName: true,
+            lastName: true,
+            role: true,
+            rfidUid: true,
+          },
+        });
       });
 
       console.log(`✅ Assigned RFID UID ${cleanRfid} to [${updated.role}] ${updated.firstName} ${updated.lastName}`);

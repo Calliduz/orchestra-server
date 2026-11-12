@@ -7,6 +7,7 @@ import userRoutes from './user.routes.js';
 import sectionRoutes from './section.routes.js';
 import enrollmentRoutes from './enrollment.routes.js';
 import analyticsRoutes from './analytics.routes.js';
+import studentRoutes from './student.routes.js';
 
 const router = Router();
 
@@ -18,6 +19,7 @@ router.use('/users', userRoutes);
 router.use('/sections', sectionRoutes);
 router.use('/enrollments', enrollmentRoutes);
 router.use('/analytics', analyticsRoutes);
+router.use('/students', studentRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {

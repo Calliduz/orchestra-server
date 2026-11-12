@@ -5,10 +5,10 @@ import { Role } from '@prisma/client';
 
 const router = Router();
 
-// Public / Authenticated read
-router.get('/', (req, res) => sectionController.getAllSections(req, res));
+// Authenticated read
+router.get('/', requireAuth, (req, res) => sectionController.getAllSections(req, res));
 router.get('/my', requireAuth, (req, res) => sectionController.getMySections(req, res));
-router.get('/:id', (req, res) => sectionController.getSectionById(req, res));
+router.get('/:id', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sectionController.getSectionById(req, res));
 
 // Admin CRUD
 router.post('/', requireAuth, requireRole(Role.ADMIN), (req, res) => sectionController.createSection(req, res));

@@ -24,6 +24,25 @@ const emailReportSchema = z.object({
   recipientEmail: z.string().email('Invalid email address').optional(),
 });
 
+/**
+ * Asserts session ownership for RBAC authorization:
+ * - ADMIN: Unrestricted authority over all sessions
+ * - FACULTY: Authorized only over sections/sessions where user.id === sessionFacultyId
+ * - STUDENT (and any other role): Strictly forbidden (HTTP 403)
+ */
+export function assertSessionOwnership(user?: { id: string; role: Role }, sessionFacultyId?: string): void {
+  if (!user) {
+    const error: any = new Error('Authentication required');
+    error.statusCode = 401;
+    throw error;
+  }
+  if (user.role === Role.ADMIN) return;
+  if (user.role === Role.FACULTY && user.id === sessionFacultyId) return;
+  const error: any = new Error('Forbidden: You do not possess authority over this session.');
+  error.statusCode = 403;
+  throw error;
+}
+
 export class SessionController {
   /**
    * GET /api/v1/sessions/active/:terminalId
@@ -67,15 +86,12 @@ export class SessionController {
         return;
       }
 
-      // If user is faculty, ensure they teach this session
-      if (req.user && req.user.role === Role.FACULTY && session.facultyId !== req.user.id) {
-        res.status(403).json({ success: false, message: 'Forbidden: You do not have access to this session.' });
-        return;
-      }
+      // Assert session authority (Admin or Session Faculty)
+      assertSessionOwnership(req.user, session.facultyId);
 
       res.status(200).json({ success: true, data: session });
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+      res.status(err.statusCode || 500).json({ success: false, message: err.message });
     }
   }
 
@@ -91,11 +107,8 @@ export class SessionController {
         return;
       }
 
-      // Session ownership guard
-      if (req.user && req.user.role === Role.FACULTY && session.facultyId !== req.user.id) {
-        res.status(403).json({ success: false, message: 'Access denied: You cannot alter thresholds for another faculty member\'s session.' });
-        return;
-      }
+      // Assert session authority (Admin or Session Faculty)
+      assertSessionOwnership(req.user, session.facultyId);
 
       const parsed = thresholdSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -115,7 +128,7 @@ export class SessionController {
         data: updated,
       });
     } catch (err: any) {
-      res.status(400).json({ success: false, message: err.message });
+      res.status(err.statusCode || 400).json({ success: false, message: err.message });
     }
   }
 
@@ -131,11 +144,8 @@ export class SessionController {
         return;
       }
 
-      // Session ownership guard
-      if (req.user && req.user.role === Role.FACULTY && session.facultyId !== req.user.id) {
-        res.status(403).json({ success: false, message: 'Access denied: You cannot modify attendance for another faculty member\'s session.' });
-        return;
-      }
+      // Assert session authority (Admin or Session Faculty)
+      assertSessionOwnership(req.user, session.facultyId);
 
       const parsed = overrideSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -160,7 +170,7 @@ export class SessionController {
         data: result,
       });
     } catch (err: any) {
-      res.status(400).json({ success: false, message: err.message });
+      res.status(err.statusCode || 400).json({ success: false, message: err.message });
     }
   }
 
@@ -191,10 +201,8 @@ export class SessionController {
         return;
       }
 
-      if (req.user.role === Role.FACULTY && section.facultyId !== req.user.id) {
-        res.status(403).json({ success: false, message: 'Access denied: You are not assigned to this section.' });
-        return;
-      }
+      // Assert section authority (Admin or Section Faculty)
+      assertSessionOwnership(req.user, section.facultyId);
 
       const activeTerminalId = terminalId || section.terminalId;
 
@@ -266,14 +274,8 @@ export class SessionController {
         return;
       }
 
-      // BUG FIX: Session ownership guard
-      if (req.user && req.user.role === Role.FACULTY && session.facultyId !== req.user.id) {
-        res.status(403).json({
-          success: false,
-          message: 'Access denied: You cannot close a session initiated by another faculty member.',
-        });
-        return;
-      }
+      // Assert session authority (Admin or Session Faculty)
+      assertSessionOwnership(req.user, session.facultyId);
 
       const result = await sessionService.closeSession(id);
       if (session.terminalId) {
@@ -285,55 +287,76 @@ export class SessionController {
         data: result,
       });
     } catch (err: any) {
-      res.status(400).json({ success: false, message: err.message });
+      res.status(err.statusCode || 400).json({ success: false, message: err.message });
     }
   }
 
   /**
    * GET /api/v1/sessions/:id/export/pdf
    */
-  async downloadPdf(req: Request, res: Response): Promise<void> {
+  async downloadPdf(req: AuthRequest, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
+      const session = await prisma.session.findUnique({ where: { id } });
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Session not found' });
+        return;
+      }
+      assertSessionOwnership(req.user, session.facultyId);
+
       const { pdfBuffer } = await reportService.generateSessionReports(id);
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Report_${id.slice(0, 8)}.pdf`);
       res.send(pdfBuffer);
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+      res.status(err.statusCode || 500).json({ success: false, message: err.message });
     }
   }
 
   /**
    * GET /api/v1/sessions/:id/export/csv
    */
-  async downloadCsv(req: Request, res: Response): Promise<void> {
+  async downloadCsv(req: AuthRequest, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
+      const session = await prisma.session.findUnique({ where: { id } });
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Session not found' });
+        return;
+      }
+      assertSessionOwnership(req.user, session.facultyId);
+
       const { csvString } = await reportService.generateSessionReports(id);
 
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Roster_${id.slice(0, 8)}.csv`);
       res.send(csvString);
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+      res.status(err.statusCode || 500).json({ success: false, message: err.message });
     }
   }
 
   /**
    * GET /api/v1/sessions/:id/export/xlsx
    */
-  async downloadExcel(req: Request, res: Response): Promise<void> {
+  async downloadExcel(req: AuthRequest, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
+      const session = await prisma.session.findUnique({ where: { id } });
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Session not found' });
+        return;
+      }
+      assertSessionOwnership(req.user, session.facultyId);
+
       const { xlsxBuffer } = await reportService.generateSessionReports(id);
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Attendance_${id.slice(0, 8)}.xlsx`);
       res.send(xlsxBuffer);
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+      res.status(err.statusCode || 500).json({ success: false, message: err.message });
     }
   }
 
@@ -356,10 +379,8 @@ export class SessionController {
         return;
       }
 
-      if (req.user && req.user.role === Role.FACULTY && session.facultyId !== req.user.id) {
-        res.status(403).json({ success: false, message: 'Access denied: You cannot email reports for another faculty session.' });
-        return;
-      }
+      // Assert session authority (Admin or Session Faculty)
+      assertSessionOwnership(req.user, session.facultyId);
 
       const { pdfPath, csvPath, xlsxPath } = await reportService.generateSessionReports(id);
 
@@ -390,7 +411,7 @@ export class SessionController {
         message: `Attendance report successfully dispatched to ${recipient}`,
       });
     } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+      res.status(err.statusCode || 500).json({ success: false, message: err.message });
     }
   }
 

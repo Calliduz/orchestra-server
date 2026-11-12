@@ -195,7 +195,8 @@ export class HardwareService {
       sessionAction?: 'START' | 'CLOSE' | 'CONTINUE';
       facultyUid?: string;
       records: Array<{
-        rfidUid: string;
+        rfidUid?: string;
+        cardUid?: string;
         timestamp?: string;
         authMethod?: string;
       }>;
@@ -381,7 +382,9 @@ export class HardwareService {
     const enrolledStudentIds = new Set(activeSession.section.enrollments.map((e) => e.studentId));
 
     for (const rec of records) {
-      const cleanUid = this.normalizeRfid(rec.rfidUid || rec.cardUid);
+      const rawUid = rec.rfidUid || rec.cardUid;
+      if (!rawUid) continue;
+      const cleanUid = this.normalizeRfid(rawUid);
       const student = await prisma.user.findUnique({
         where: { rfidUid: cleanUid },
       });
@@ -425,23 +428,32 @@ export class HardwareService {
         status = AttendanceStatus.LATE;
       }
 
-      await prisma.attendanceLog.create({
-        data: {
-          sessionId: activeSession.id,
-          studentId: student.id,
-          status,
-          authMethod: (rec.authMethod as AuthMethod) || AuthMethod.RFID_TAP,
-          tapTimestamp: tapTime,
-          reverseReceiptSent: false,
-        },
-      });
+      let attendanceLog;
+      try {
+        attendanceLog = await prisma.attendanceLog.create({
+          data: {
+            sessionId: activeSession.id,
+            studentId: student.id,
+            status,
+            authMethod: (rec.authMethod as AuthMethod) || AuthMethod.RFID_TAP,
+            tapTimestamp: tapTime,
+            reverseReceiptSent: false,
+          },
+        });
+      } catch (err: any) {
+        if (err.code === 'P2002') {
+          duplicateCount++;
+          continue;
+        }
+        throw err;
+      }
 
       syncedCount++;
 
       // Dispatch reverse-receipt in background
       mailerService
         .sendReverseReceipt({
-          logId: student.id,
+          logId: attendanceLog.id,
           studentEmail: student.email,
           studentName: `${student.firstName} ${student.lastName}`,
           sectionCode: activeSession.section.sectionCode,
@@ -800,27 +812,46 @@ export class HardwareService {
 
     // 4. Create or Update Attendance Record
     let attendanceLog;
-    if (existingLog) {
-      attendanceLog = await prisma.attendanceLog.update({
-        where: { id: existingLog.id },
-        data: {
-          status,
-          authMethod: AuthMethod.RFID_TAP,
-          tapTimestamp: now,
-          reverseReceiptSent: false,
-        },
-      });
-    } else {
-      attendanceLog = await prisma.attendanceLog.create({
-        data: {
-          sessionId: activeSession.id,
-          studentId: cardHolder.id,
-          status,
-          authMethod: AuthMethod.RFID_TAP,
-          tapTimestamp: now,
-          reverseReceiptSent: false,
-        },
-      });
+    try {
+      if (existingLog) {
+        attendanceLog = await prisma.attendanceLog.update({
+          where: { id: existingLog.id },
+          data: {
+            status,
+            authMethod: AuthMethod.RFID_TAP,
+            tapTimestamp: now,
+            reverseReceiptSent: false,
+          },
+        });
+      } else {
+        attendanceLog = await prisma.attendanceLog.create({
+          data: {
+            sessionId: activeSession.id,
+            studentId: cardHolder.id,
+            status,
+            authMethod: AuthMethod.RFID_TAP,
+            tapTimestamp: now,
+            reverseReceiptSent: false,
+          },
+        });
+      }
+    } catch (err: any) {
+      if (err.code === 'P2002') {
+        // Unique constraint collision under race condition -> Gracefully treat as Anti-Passback duplicate
+        return {
+          statusCode: 409,
+          success: false,
+          code: 'ALREADY_RECORDED',
+          message: `ANTI-PASSBACK ALERT: ${cardHolder.firstName} ${cardHolder.lastName} is already checked in.`,
+          data: {
+            studentId: cardHolder.studentId,
+            studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+            status,
+            tapTime: now,
+          },
+        };
+      }
+      throw err;
     }
 
     // 5. Asynchronous Multi-Layer Anti-Proxy Defense: Automated Reverse-Receipt Notification
