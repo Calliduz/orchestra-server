@@ -8,6 +8,25 @@ const updateRfidSchema = z.object({
   rfidUid: z.string().min(1, 'RFID UID is required').max(32),
 });
 
+const massDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1, 'At least one user ID is required').max(200),
+});
+
+const bulkUserRowSchema = z.object({
+  firstName: z.string().min(1, 'First name is required'),
+  lastName: z.string().min(1, 'Last name is required'),
+  email: z.string().email('Invalid email'),
+  studentId: z.string().optional().nullable(),
+  rfidUid: z.string().optional().nullable(),
+  department: z.string().optional().nullable(),
+  role: z.nativeEnum(Role).optional().default(Role.STUDENT),
+  password: z.string().optional().nullable(),
+});
+
+const massCreateSchema = z.object({
+  users: z.array(bulkUserRowSchema).min(1).max(500),
+});
+
 const createUserSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(6, 'Password must be at least 6 characters').optional(),
@@ -472,6 +491,139 @@ export class UserController {
         success: false,
         message: err.message || 'Failed to remove RFID',
       });
+    }
+  }
+  /**
+   * DELETE /api/v1/users/bulk
+   * Admin-only: delete multiple users by ID array.
+   * Students are cascade-deleted; faculty with sections/sessions are skipped.
+   */
+  async massDeleteUsers(req: Request, res: Response): Promise<void> {
+    try {
+      const parsed = massDeleteSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid payload' });
+        return;
+      }
+
+      const { ids } = parsed.data;
+
+      // Fetch users with relation counts to decide which can be deleted
+      const users = await prisma.user.findMany({
+        where: { id: { in: ids } },
+        include: {
+          _count: { select: { sectionsTaught: true, sessionsInstructed: true } },
+        },
+      });
+
+      const skipped: { name: string; reason: string }[] = [];
+      const toDeleteIds: string[] = [];
+
+      for (const u of users) {
+        const isProtected =
+          (u.role === Role.FACULTY || u.role === Role.ADMIN) &&
+          (u._count.sectionsTaught > 0 || u._count.sessionsInstructed > 0);
+
+        if (isProtected) {
+          skipped.push({
+            name: `${u.firstName} ${u.lastName}`,
+            reason: `has ${u._count.sectionsTaught} section(s) / ${u._count.sessionsInstructed} session(s)`,
+          });
+        } else {
+          toDeleteIds.push(u.id);
+        }
+      }
+
+      let deleted = 0;
+      if (toDeleteIds.length > 0) {
+        const result = await prisma.user.deleteMany({ where: { id: { in: toDeleteIds } } });
+        deleted = result.count;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: `Deleted ${deleted} user(s).${skipped.length > 0 ? ` Skipped ${skipped.length}: ${skipped.map((s) => `${s.name} (${s.reason})`).join('; ')}` : ''}`,
+        data: { deleted, skipped },
+      });
+    } catch (err: any) {
+      console.error('❌ Mass delete error:', err);
+      res.status(500).json({ success: false, message: err.message || 'Mass delete failed' });
+    }
+  }
+
+  /**
+   * POST /api/v1/users/bulk
+   * Admin-only: create up to 500 users at once from a parsed array.
+   * Returns per-row results so the UI can show which rows succeeded/failed.
+   */
+  async massCreateUsers(req: Request, res: Response): Promise<void> {
+    try {
+      const parsed = massCreateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ success: false, message: parsed.error.issues[0]?.message || 'Invalid payload' });
+        return;
+      }
+
+      const rows = parsed.data.users;
+      const results: { row: number; success: boolean; email: string; message?: string }[] = [];
+      let created = 0;
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        try {
+          // Check duplicates
+          const [existingEmail, existingStudentId, existingRfid] = await Promise.all([
+            prisma.user.findUnique({ where: { email: row.email } }),
+            row.studentId ? prisma.user.findUnique({ where: { studentId: row.studentId } }) : null,
+            row.rfidUid ? prisma.user.findUnique({ where: { rfidUid: row.rfidUid.replace(/[^a-zA-Z0-9]/g, '').toUpperCase() } }) : null,
+          ]);
+
+          if (existingEmail) {
+            results.push({ row: i + 1, success: false, email: row.email, message: 'Email already exists' });
+            continue;
+          }
+          if (existingStudentId) {
+            results.push({ row: i + 1, success: false, email: row.email, message: `Student ID "${row.studentId}" already in use` });
+            continue;
+          }
+          if (existingRfid) {
+            results.push({ row: i + 1, success: false, email: row.email, message: `RFID UID "${row.rfidUid}" already assigned` });
+            continue;
+          }
+
+          const role = row.role ?? Role.STUDENT;
+          const rawPassword = row.password || (role === Role.STUDENT ? 'StudentPass123!' : 'Password123!');
+          const hashedPassword = await bcrypt.hash(rawPassword, 10);
+          const cleanRfid = row.rfidUid ? row.rfidUid.replace(/[^a-zA-Z0-9]/g, '').toUpperCase() : null;
+
+          await prisma.user.create({
+            data: {
+              email: row.email,
+              password: hashedPassword,
+              firstName: row.firstName,
+              lastName: row.lastName,
+              role,
+              studentId: row.studentId || null,
+              rfidUid: cleanRfid || null,
+              department: row.department || 'College of Computer Studies',
+            },
+          });
+
+          results.push({ row: i + 1, success: true, email: row.email });
+          created++;
+        } catch (rowErr: any) {
+          results.push({ row: i + 1, success: false, email: row.email, message: rowErr.message });
+        }
+      }
+
+      res.status(201).json({
+        success: true,
+        message: `Created ${created} of ${rows.length} user(s).`,
+        data: { created, failed: rows.length - created, results },
+      });
+    } catch (err: any) {
+      console.error('❌ Mass create error:', err);
+      res.status(500).json({ success: false, message: err.message || 'Mass create failed' });
     }
   }
 }

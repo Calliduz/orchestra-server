@@ -7,9 +7,13 @@ const router = Router();
 
 // Retrieve all users (admin or faculty can view student rosters)
 router.get('/', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => userController.getAllUsers(req, res));
-router.get('/:id', requireAuth, (req, res) => userController.getUserById(req, res));
 
-// Admin-only management endpoints
+// Admin-only bulk operations — must be BEFORE /:id routes so '/bulk' isn't parsed as an id
+router.post('/bulk', requireAuth, requireRole(Role.ADMIN), (req, res) => userController.massCreateUsers(req, res));
+router.delete('/bulk', requireAuth, requireRole(Role.ADMIN), (req, res) => userController.massDeleteUsers(req, res));
+
+// Single-user routes
+router.get('/:id', requireAuth, (req, res) => userController.getUserById(req, res));
 router.post('/', requireAuth, requireRole(Role.ADMIN), (req, res) => userController.createUser(req, res));
 router.put('/:id', requireAuth, requireRole(Role.ADMIN), (req, res) => userController.updateUser(req, res));
 router.delete('/:id', requireAuth, requireRole(Role.ADMIN), (req, res) => userController.deleteUser(req, res));
