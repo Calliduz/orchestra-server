@@ -310,25 +310,70 @@ export class UserController {
 
   /**
    * DELETE /api/v1/users/:id
-   * Admin-only user deletion
+   * Admin-only user deletion with cascade safety
    */
   async deleteUser(req: Request, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
-      const user = await prisma.user.findUnique({ where: { id } });
+      const user = await prisma.user.findUnique({
+        where: { id },
+        include: {
+          _count: {
+            select: {
+              enrollments: true,
+              attendanceLogs: true,
+              sectionsTaught: true,
+              sessionsInstructed: true,
+              otpCodes: true,
+            },
+          },
+        },
+      });
       if (!user) {
         res.status(404).json({ success: false, message: 'User not found' });
         return;
       }
 
+      // Prevent deletion of faculty who still own sections or active sessions
+      if (user.role === Role.FACULTY || user.role === Role.ADMIN) {
+        if (user._count.sectionsTaught > 0) {
+          res.status(409).json({
+            success: false,
+            message: `Cannot delete ${user.firstName} ${user.lastName} — they are assigned to ${user._count.sectionsTaught} section(s). Reassign or delete those sections first.`,
+          });
+          return;
+        }
+        if (user._count.sessionsInstructed > 0) {
+          res.status(409).json({
+            success: false,
+            message: `Cannot delete ${user.firstName} ${user.lastName} — they have ${user._count.sessionsInstructed} session record(s). Archive sessions first.`,
+          });
+          return;
+        }
+      }
+
+      // For students: cascading delete will remove enrollments, attendance logs, and OTP codes
       await prisma.user.delete({ where: { id } });
+
+      const cascaded: string[] = [];
+      if (user._count.enrollments > 0) cascaded.push(`${user._count.enrollments} enrollment(s)`);
+      if (user._count.attendanceLogs > 0) cascaded.push(`${user._count.attendanceLogs} attendance log(s)`);
+      if (user._count.otpCodes > 0) cascaded.push(`${user._count.otpCodes} OTP code(s)`);
 
       res.status(200).json({
         success: true,
-        message: `User ${user.firstName} ${user.lastName} successfully deleted.`,
+        message: `User ${user.firstName} ${user.lastName} successfully deleted.${cascaded.length > 0 ? ` Removed ${cascaded.join(', ')}.` : ''}`,
       });
     } catch (err: any) {
       console.error('❌ Error deleting user:', err);
+      // Handle Prisma foreign key constraint error
+      if (err.code === 'P2003') {
+        res.status(409).json({
+          success: false,
+          message: 'Cannot delete this user — they have dependent records that prevent deletion. Remove their sections or sessions first.',
+        });
+        return;
+      }
       res.status(500).json({ success: false, message: err.message || 'Failed to delete user' });
     }
   }
