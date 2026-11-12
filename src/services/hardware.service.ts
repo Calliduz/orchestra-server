@@ -41,6 +41,22 @@ export class HardwareService {
 
   private activeEnrollment: EnrollmentSession | null = null;
 
+  /**
+   * Safely parses an ISO date string into a valid Date object.
+   * If string is malformed or invalid, safely defaults to current date.
+   */
+  private parseValidDate(dateStr?: string | null): Date {
+    if (!dateStr || typeof dateStr !== 'string' || dateStr.trim() === '') {
+      return new Date();
+    }
+    const parsed = new Date(dateStr);
+    if (isNaN(parsed.getTime())) {
+      console.warn(`⚠️ [OFFLINE SYNC] Received invalid timestamp "${dateStr}". Defaulting to current timestamp.`);
+      return new Date();
+    }
+    return parsed;
+  }
+
   startEnrollmentSession(
     terminalId: string = 'TERM-CL304',
     targetRole: 'STUDENT' | 'FACULTY' | 'ADMIN' = 'STUDENT',
@@ -227,7 +243,7 @@ export class HardwareService {
 
         if (section) {
           const earliestTime =
-            records.length > 0 && records[0].timestamp ? new Date(records[0].timestamp) : new Date();
+            records.length > 0 ? this.parseValidDate(records[0].timestamp) : new Date();
 
           activeSession = await prisma.session.create({
             data: {
@@ -339,7 +355,7 @@ export class HardwareService {
       }
 
       // Calculate status based on tap timestamp vs session start
-      const tapTime = rec.timestamp ? new Date(rec.timestamp) : new Date();
+      const tapTime = this.parseValidDate(rec.timestamp);
       const elapsedMins = Math.max(0, (tapTime.getTime() - activeSession.startTime.getTime()) / (1000 * 60));
 
       let status: AttendanceStatus = AttendanceStatus.PRESENT;
