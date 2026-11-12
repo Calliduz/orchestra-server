@@ -469,10 +469,17 @@ export class HardwareService {
       roster: activeDetails.roster,
     });
 
-    // If professor ended the session while offline, finalize it
-    if (payload.sessionAction === 'CLOSE' && activeSession.status === SessionStatus.OPEN) {
-      await sessionService.closeSession(activeSession.id);
-      this.recordTerminalClosed(terminalId);
+    // If professor ended the session while offline, finalize it with ownership verification
+    if (payload.sessionAction === 'CLOSE' && activeSession.status === SessionStatus.OPEN && payload.facultyUid) {
+      const cleanFacultyUid = this.normalizeRfid(payload.facultyUid);
+      const faculty = await prisma.user.findUnique({ where: { rfidUid: cleanFacultyUid } });
+      if (faculty && (faculty.id === activeSession.facultyId || faculty.role === Role.ADMIN)) {
+        await sessionService.closeSession(activeSession.id);
+        this.recordTerminalClosed(terminalId);
+        console.log(`🔒 [OFFLINE SYNC] Session ${activeSession.id} finalized per offline close request from Prof. ${faculty.lastName}.`);
+      } else {
+        console.warn(`⚠️ [OFFLINE SYNC GUARD] Suppressed close request: payload facultyUid (${cleanFacultyUid}) not authorized for active session.`);
+      }
     }
 
     return {
