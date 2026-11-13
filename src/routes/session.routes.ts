@@ -6,7 +6,7 @@ import { Role } from '@prisma/client';
 const router = Router();
 
 // Active terminal session
-router.get('/active/:terminalId', requireAuth, (req, res) => sessionController.getActiveSession(req, res));
+router.get('/active/:terminalId', (req, res) => sessionController.getActiveSession(req, res));
 
 // Faculty's personal session history
 router.get('/my', requireAuth, (req, res) => sessionController.getMySessions(req, res));

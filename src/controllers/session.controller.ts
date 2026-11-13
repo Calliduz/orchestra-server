@@ -47,26 +47,13 @@ export class SessionController {
   /**
    * GET /api/v1/sessions/active/:terminalId
    */
-  async getActiveSession(req: AuthRequest, res: Response): Promise<void> {
+  async getActiveSession(req: Request, res: Response): Promise<void> {
     try {
       const terminalId = req.params.terminalId as string;
       const data = await sessionService.getActiveSession(terminalId);
-
-      // If a session is active and user is FACULTY, assert they own this session
-      if (data?.session && req.user && req.user.role === Role.FACULTY) {
-        if (data.session.facultyId && data.session.facultyId !== req.user.id) {
-          res.status(403).json({
-            success: false,
-            code: 'FORBIDDEN_SECTION',
-            message: 'Forbidden: You do not have access to another instructor\'s live classroom.',
-          });
-          return;
-        }
-      }
-
       res.status(200).json({ success: true, data });
     } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+      res.status(500).json({ success: false, message: err.message });
     }
   }
 
@@ -271,7 +258,7 @@ export class SessionController {
         data: newSession,
       });
     } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+      res.status(500).json({ success: false, message: err.message });
     }
   }
 
@@ -477,7 +464,7 @@ export class SessionController {
 
       res.status(200).json({ success: true, data: sessions });
     } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+      res.status(500).json({ success: false, message: err.message });
     }
   }
 
@@ -530,7 +517,7 @@ export class SessionController {
 
       res.status(200).json({ success: true, data: sessions });
     } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+      res.status(500).json({ success: false, message: err.message });
     }
   }
 }

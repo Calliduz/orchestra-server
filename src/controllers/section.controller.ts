@@ -102,7 +102,7 @@ export class SectionController {
    * GET /api/v1/sections/:id
    * Detail of a single section including enrolled student roster
    */
-  async getSectionById(req: AuthRequest, res: Response): Promise<void> {
+  async getSectionById(req: Request, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
       const section = await prisma.section.findUnique({
@@ -139,16 +139,6 @@ export class SectionController {
 
       if (!section) {
         res.status(404).json({ success: false, message: 'Section not found' });
-        return;
-      }
-
-      // If user is a FACULTY, prevent viewing other faculty members' section rosters
-      if (req.user && req.user.role === Role.FACULTY && section.facultyId !== req.user.id) {
-        res.status(403).json({
-          success: false,
-          code: 'FORBIDDEN_SECTION',
-          message: 'Forbidden: You do not have permission to view another instructor\'s section.',
-        });
         return;
       }
 
