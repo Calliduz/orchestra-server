@@ -6,6 +6,27 @@ import prisma from './config/prisma.js';
 
 const server = http.createServer(app);
 
+// Robust GET /health endpoint verifying database connectivity via prisma.$queryRaw
+app.get('/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.status(200).json({
+      status: 'ONLINE',
+      database: 'connected',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    res.status(503).json({
+      status: 'ERROR',
+      database: 'disconnected',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      error: error?.message || 'Database connection failure',
+    });
+  }
+});
+
 // Initialize Socket.io Telemetry Server
 initializeSocket(server);
 

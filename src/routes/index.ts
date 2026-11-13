@@ -8,6 +8,7 @@ import sectionRoutes from './section.routes.js';
 import enrollmentRoutes from './enrollment.routes.js';
 import analyticsRoutes from './analytics.routes.js';
 import studentRoutes from './student.routes.js';
+import prisma from '../config/prisma.js';
 
 const router = Router();
 
@@ -22,12 +23,26 @@ router.use('/analytics', analyticsRoutes);
 router.use('/students', studentRoutes);
 
 // Health check endpoint
-router.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ONLINE',
-    framework: 'ORCHESTRA IoT Classroom Attendance Framework',
-    timestamp: new Date().toISOString(),
-  });
+router.get('/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.status(200).json({
+      status: 'ONLINE',
+      framework: 'ORCHESTRA IoT Classroom Attendance Framework',
+      database: 'connected',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    res.status(503).json({
+      status: 'ERROR',
+      framework: 'ORCHESTRA IoT Classroom Attendance Framework',
+      database: 'disconnected',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      error: error?.message || 'Database connection failure',
+    });
+  }
 });
 
 export default router;
