@@ -135,22 +135,6 @@ export class HardwareService {
 
     const facultyMap = new Map<string, { rfidUid: string; name: string; role: Role; department: string | null }>();
 
-    // Baseline fallback faculty: Prof. Macadat
-    facultyMap.set('892B2E8E', {
-      rfidUid: '892B2E8E',
-      name: 'Karlito Macadat',
-      role: Role.FACULTY,
-      department: 'College of Computer Studies',
-    });
-
-    // Baseline fallback faculty: Prof. Agbada
-    facultyMap.set('71394417', {
-      rfidUid: '71394417',
-      name: 'Justine Jay Agbada',
-      role: Role.FACULTY,
-      department: 'College of Computer Studies',
-    });
-
     // Baseline fallback admin
     facultyMap.set('99AA88BB', {
       rfidUid: '99AA88BB',
