@@ -24,6 +24,28 @@ const emailReportSchema = z.object({
   recipientEmail: z.string().email('Invalid email address').optional(),
 });
 
+export interface HttpError extends Error {
+  statusCode?: number;
+}
+
+export function createHttpError(message: string, statusCode: number): HttpError {
+  const error = new Error(message) as HttpError;
+  error.statusCode = statusCode;
+  return error;
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function getErrorStatusCode(err: unknown, defaultCode = 500): number {
+  if (err && typeof err === 'object' && 'statusCode' in err && typeof (err as HttpError).statusCode === 'number') {
+    return (err as HttpError).statusCode!;
+  }
+  return defaultCode;
+}
+
 /**
  * Asserts session ownership for RBAC authorization:
  * - ADMIN: Unrestricted authority over all sessions
@@ -32,15 +54,11 @@ const emailReportSchema = z.object({
  */
 export function assertSessionOwnership(user?: { id: string; role: Role }, sessionFacultyId?: string): void {
   if (!user) {
-    const error: any = new Error('Authentication required');
-    error.statusCode = 401;
-    throw error;
+    throw createHttpError('Authentication required', 401);
   }
   if (user.role === Role.ADMIN) return;
   if (user.role === Role.FACULTY && user.id === sessionFacultyId) return;
-  const error: any = new Error('Forbidden: You do not possess authority over this session.');
-  error.statusCode = 403;
-  throw error;
+  throw createHttpError('Forbidden: You do not possess authority over this session.', 403);
 }
 
 export class SessionController {
@@ -52,8 +70,8 @@ export class SessionController {
       const terminalId = req.params.terminalId as string;
       const data = await sessionService.getActiveSession(terminalId);
       res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(500).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -90,8 +108,8 @@ export class SessionController {
       assertSessionOwnership(req.user, session.facultyId);
 
       res.status(200).json({ success: true, data: session });
-    } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -127,8 +145,8 @@ export class SessionController {
         message: 'Punctuality thresholds updated and student statuses recalculated.',
         data: updated,
       });
-    } catch (err: any) {
-      res.status(err.statusCode || 400).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 400)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -169,8 +187,8 @@ export class SessionController {
         message: `Manual status override applied: ${parsed.data.status}`,
         data: result,
       });
-    } catch (err: any) {
-      res.status(err.statusCode || 400).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 400)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -257,8 +275,8 @@ export class SessionController {
         message: `Classroom attendance session initiated for ${section.sectionCode}`,
         data: newSession,
       });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(500).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -286,8 +304,8 @@ export class SessionController {
         message: 'Class session closed. Attendance finalized and reports compiled.',
         data: result,
       });
-    } catch (err: any) {
-      res.status(err.statusCode || 400).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 400)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -309,8 +327,8 @@ export class SessionController {
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Report_${id.slice(0, 8)}.pdf`);
       res.send(pdfBuffer);
-    } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -332,8 +350,8 @@ export class SessionController {
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Roster_${id.slice(0, 8)}.csv`);
       res.send(csvString);
-    } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -355,8 +373,8 @@ export class SessionController {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Attendance_${id.slice(0, 8)}.xlsx`);
       res.send(xlsxBuffer);
-    } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -410,8 +428,8 @@ export class SessionController {
         success: true,
         message: `Attendance report successfully dispatched to ${recipient}`,
       });
-    } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -463,8 +481,8 @@ export class SessionController {
       });
 
       res.status(200).json({ success: true, data: sessions });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(500).json({ success: false, message: getErrorMessage(err) });
     }
   }
 
@@ -516,8 +534,8 @@ export class SessionController {
       });
 
       res.status(200).json({ success: true, data: sessions });
-    } catch (err: any) {
-      res.status(500).json({ success: false, message: err.message });
+    } catch (err: unknown) {
+      res.status(500).json({ success: false, message: getErrorMessage(err) });
     }
   }
 }

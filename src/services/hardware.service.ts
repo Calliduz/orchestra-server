@@ -18,6 +18,7 @@ export interface HardwareTapResult {
     | 'ALREADY_RECORDED'
     | 'UNREGISTERED_CARD'
     | 'ENROLLMENT_CAPTURED'
+    | 'FACULTY_BADGE_REQUIRED'
     | 'ERROR';
   message: string;
   data?: any;
@@ -128,41 +129,16 @@ export class HardwareService {
       },
     });
 
-    const admins = await prisma.user.findMany({
-      where: { role: Role.ADMIN, rfidUid: { not: null } },
-      select: { id: true, firstName: true, lastName: true, email: true, rfidUid: true, role: true, department: true },
-    });
-
     const facultyMap = new Map<string, { rfidUid: string; name: string; role: Role; department: string | null }>();
-
-    // Baseline fallback admin
-    facultyMap.set('99AA88BB', {
-      rfidUid: '99AA88BB',
-      name: 'System Administrator',
-      role: Role.ADMIN,
-      department: 'IT Infrastructure Division',
-    });
 
     for (const s of sections) {
       if (s.faculty && s.faculty.rfidUid) {
         const cleanUid = this.normalizeRfid(s.faculty.rfidUid);
         facultyMap.set(cleanUid, {
           rfidUid: cleanUid,
-          name: `${s.faculty.firstName} ${s.faculty.lastName}`,
+          name: `Prof. ${s.faculty.firstName} ${s.faculty.lastName}`,
           role: s.faculty.role,
           department: s.faculty.department,
-        });
-      }
-    }
-
-    for (const a of admins) {
-      if (a.rfidUid) {
-        const cleanUid = this.normalizeRfid(a.rfidUid);
-        facultyMap.set(cleanUid, {
-          rfidUid: cleanUid,
-          name: `${a.firstName} ${a.lastName}`,
-          role: a.role,
-          department: a.department,
         });
       }
     }
@@ -267,10 +243,7 @@ export class HardwareService {
             sectionCode: section.sectionCode,
             courseName: section.courseName,
             roomNumber: section.roomNumber,
-            facultyName:
-              faculty.role === Role.ADMIN
-                ? `${faculty.firstName} ${faculty.lastName}`
-                : `Prof. ${faculty.firstName} ${faculty.lastName}`,
+            facultyName: `Prof. ${faculty.firstName} ${faculty.lastName}`,
             startTime: activeSession.startTime.toISOString(),
             lateThresholdMins: activeSession.lateThresholdMins,
             cutThresholdMins: activeSession.cutThresholdMins,
@@ -597,6 +570,16 @@ export class HardwareService {
         };
       }
 
+      // If an Admin tries to scan while terminal is locked -> REJECT (Option 1: Faculty Only)
+      if (cardHolder.role === Role.ADMIN) {
+        return {
+          statusCode: 403,
+          success: false,
+          code: 'UNAUTHORIZED_FACULTY',
+          message: 'ACCESS RESTRICTED: Admin badges cannot initiate classroom sessions. An assigned faculty badge is required.',
+        };
+      }
+
       // Interlock Guard: If terminal was locked within the last 4000ms, suppress immediate restart
       const lastClosed = this.terminalLastClosed.get(terminalId) || 0;
       const elapsedSinceClose = Date.now() - lastClosed;
@@ -610,20 +593,12 @@ export class HardwareService {
         };
       }
 
-      // If Faculty or Admin scans master badge -> UNLOCK TERMINAL & OPEN SESSION
+      // If Faculty scans master badge -> UNLOCK TERMINAL & OPEN SESSION
       // 1. Try finding section specifically assigned to this faculty on this terminal
-      let section = await prisma.section.findFirst({
+      const section = await prisma.section.findFirst({
         where: { terminalId, facultyId: cardHolder.id },
         include: { faculty: true },
       });
-
-      // 2. If cardHolder is ADMIN, allow unlocking the terminal's configured section
-      if (!section && cardHolder.role === Role.ADMIN) {
-        section = await prisma.section.findFirst({
-          where: { terminalId },
-          include: { faculty: true },
-        });
-      }
 
       // 3. Security Boundary: If this terminal belongs to another faculty, REJECT unauthorized faculty!
       if (!section) {
@@ -676,7 +651,7 @@ export class HardwareService {
         sectionCode: section.sectionCode,
         courseName: section.courseName,
         roomNumber: section.roomNumber,
-        facultyName: cardHolder.role === Role.ADMIN ? `${cardHolder.firstName} ${cardHolder.lastName}` : `Prof. ${cardHolder.firstName} ${cardHolder.lastName}`,
+        facultyName: `Prof. ${cardHolder.firstName} ${cardHolder.lastName}`,
         startTime: now.toISOString(),
         lateThresholdMins: newSession.lateThresholdMins,
         cutThresholdMins: newSession.cutThresholdMins,
@@ -715,15 +690,24 @@ export class HardwareService {
       };
     }
 
-    // SUB-CASE 2A: Faculty Master Badge scanned -> CLOSE SESSION
-    if (cardHolder.role === Role.FACULTY || cardHolder.role === Role.ADMIN) {
+    // SUB-CASE 2A: Admin or Faculty Badge scanned
+    if (cardHolder.role === Role.ADMIN) {
+      return {
+        statusCode: 403,
+        success: false,
+        code: 'UNAUTHORIZED_FACULTY',
+        message: `ACCESS RESTRICTED: Admin badges cannot close classroom sessions. Only Prof. ${activeSession.faculty.lastName} can end this session.`,
+      };
+    }
+
+    if (cardHolder.role === Role.FACULTY) {
       // Prevent other faculty from closing someone else's session
-      if (cardHolder.role === Role.FACULTY && cardHolder.id !== activeSession.facultyId) {
+      if (cardHolder.id !== activeSession.facultyId) {
         return {
           statusCode: 403,
           success: false,
           code: 'UNAUTHORIZED_FACULTY',
-          message: `ACCESS DENIED: Session was initiated by Prof. ${activeSession.faculty.lastName}. Only they or an administrator can end this session.`,
+          message: `ACCESS DENIED: Session was initiated by Prof. ${activeSession.faculty.lastName}. Only they can end this session.`,
         };
       }
 
