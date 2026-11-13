@@ -36,9 +36,9 @@ export function assertSessionOwnership(user?: { id: string; role: Role }, sessio
     error.statusCode = 401;
     throw error;
   }
-  // Live classroom sessions are strictly restricted to the assigned instructor's personal account
+  if (user.role === Role.ADMIN) return;
   if (user.role === Role.FACULTY && user.id === sessionFacultyId) return;
-  const error: any = new Error('Forbidden: Live classroom session can only be managed within the assigned instructor\'s personal account, not from the admin side.');
+  const error: any = new Error('Forbidden: You do not possess authority over this session.');
   error.statusCode = 403;
   throw error;
 }
@@ -47,39 +47,13 @@ export class SessionController {
   /**
    * GET /api/v1/sessions/active/:terminalId
    */
-  async getActiveSession(req: AuthRequest, res: Response): Promise<void> {
+  async getActiveSession(req: Request, res: Response): Promise<void> {
     try {
       const terminalId = req.params.terminalId as string;
       const data = await sessionService.getActiveSession(terminalId);
-
-      // Security Isolation: If an active session is in progress, restrict access
-      if (data?.session && req.user) {
-        // Admin accounts must NOT have access to live professor sessions from the admin side
-        if (req.user.role === Role.ADMIN) {
-          res.status(403).json({
-            success: false,
-            code: 'ADMIN_NO_SESSION_ACCESS',
-            message: 'Access restricted: Live classroom sessions can only be accessed within the instructor\'s personal account, not from the admin side.',
-          });
-          return;
-        }
-
-        // Faculty accounts can only access their own live sessions
-        if (req.user.role === Role.FACULTY) {
-          if (data.session.facultyId && data.session.facultyId !== req.user.id) {
-            res.status(403).json({
-              success: false,
-              code: 'FORBIDDEN_SECTION',
-              message: 'Forbidden: You do not have access to another instructor\'s live classroom.',
-            });
-            return;
-          }
-        }
-      }
-
       res.status(200).json({ success: true, data });
     } catch (err: any) {
-      res.status(err.statusCode || 500).json({ success: false, message: err.message });
+      res.status(500).json({ success: false, message: err.message });
     }
   }
 
@@ -270,7 +244,6 @@ export class SessionController {
         sectionCode: section.sectionCode,
         courseName: section.courseName,
         roomNumber: section.roomNumber,
-        facultyId: section.facultyId,
         facultyName: req.user.role === Role.ADMIN ? `${req.user.firstName} ${req.user.lastName}` : `Prof. ${req.user.firstName} ${req.user.lastName}`,
         startTime: now.toISOString(),
         lateThresholdMins: newSession.lateThresholdMins,

@@ -58,7 +58,6 @@ export function emitSessionStarted(payload: {
   sectionCode: string;
   courseName: string;
   roomNumber: string;
-  facultyId?: string;
   facultyName: string;
   startTime: string;
   lateThresholdMins: number;
