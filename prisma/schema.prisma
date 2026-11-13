@@ -85,8 +85,9 @@ model Section {
   faculty                  User     @relation("FacultySections", fields: [facultyId], references: [id], onDelete: Restrict)
   defaultLateThresholdMins Int      @default(15) // Minutes after session start before marked LATE
   defaultCutThresholdMins  Int      @default(45) // Minutes after session start before marked CUT
-  scheduleDay              String?  // e.g., "MWF", "TTH", "SAT"
-  scheduleTime             String?  // e.g., "08:00", "13:30" (24-hr local time)
+  scheduleDay              String?  // e.g., "Mon", "Tue"
+  scheduleTime             String?  // e.g., "08:00", "13:30" (24-hr local start time)
+  scheduleEndTime          String?  // e.g., "10:00", "15:00" (24-hr local end time)
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 

@@ -14,6 +14,7 @@ const createSectionSchema = z.object({
   defaultCutThresholdMins: z.number().int().min(2).default(45),
   scheduleDay: z.string().optional().nullable(),
   scheduleTime: z.string().optional().nullable(),
+  scheduleEndTime: z.string().optional().nullable(),
 });
 
 const updateSectionSchema = z.object({
@@ -26,6 +27,7 @@ const updateSectionSchema = z.object({
   defaultCutThresholdMins: z.number().int().min(2).optional(),
   scheduleDay: z.string().optional().nullable(),
   scheduleTime: z.string().optional().nullable(),
+  scheduleEndTime: z.string().optional().nullable(),
 });
 
 export class SectionController {
@@ -161,7 +163,7 @@ export class SectionController {
         return;
       }
 
-      const { sectionCode, courseName, roomNumber, terminalId, facultyId, defaultLateThresholdMins, defaultCutThresholdMins, scheduleDay, scheduleTime } = parsed.data;
+      const { sectionCode, courseName, roomNumber, terminalId, facultyId, defaultLateThresholdMins, defaultCutThresholdMins, scheduleDay, scheduleTime, scheduleEndTime } = parsed.data;
 
       const existing = await prisma.section.findUnique({ where: { sectionCode } });
       if (existing) {
@@ -186,6 +188,7 @@ export class SectionController {
           defaultCutThresholdMins,
           scheduleDay: scheduleDay || null,
           scheduleTime: scheduleTime || null,
+          scheduleEndTime: scheduleEndTime || null,
         },
         include: {
           faculty: {
