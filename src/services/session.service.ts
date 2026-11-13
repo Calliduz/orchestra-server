@@ -134,6 +134,7 @@ export class SessionService {
         sectionCode: session.section.sectionCode,
         courseName: session.section.courseName,
         roomNumber: session.section.roomNumber,
+        facultyId: session.facultyId,
         facultyName: session.faculty.role === 'ADMIN' ? `${session.faculty.firstName} ${session.faculty.lastName}` : `Prof. ${session.faculty.firstName} ${session.faculty.lastName}`,
         startTime: session.startTime,
         lateThresholdMins: session.lateThresholdMins,

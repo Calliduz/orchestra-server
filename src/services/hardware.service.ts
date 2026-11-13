@@ -676,6 +676,7 @@ export class HardwareService {
         sectionCode: section.sectionCode,
         courseName: section.courseName,
         roomNumber: section.roomNumber,
+        facultyId: cardHolder.id,
         facultyName: cardHolder.role === Role.ADMIN ? `${cardHolder.firstName} ${cardHolder.lastName}` : `Prof. ${cardHolder.firstName} ${cardHolder.lastName}`,
         startTime: now.toISOString(),
         lateThresholdMins: newSession.lateThresholdMins,
