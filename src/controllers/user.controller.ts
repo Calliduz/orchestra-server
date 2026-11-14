@@ -322,6 +322,10 @@ export class UserController {
         data: updated,
       });
     } catch (err: any) {
+      if (err.code === 'P2025') {
+        res.status(404).json({ success: false, message: 'User not found' });
+        return;
+      }
       console.error('❌ Error updating user:', err);
       res.status(500).json({ success: false, message: err.message || 'Failed to update user' });
     }
@@ -452,6 +456,10 @@ export class UserController {
         data: updated,
       });
     } catch (err: any) {
+      if (err.code === 'P2025') {
+        res.status(404).json({ success: false, message: 'User not found' });
+        return;
+      }
       console.error('❌ Error updating user RFID:', err);
       res.status(500).json({
         success: false,
@@ -486,6 +494,10 @@ export class UserController {
         data: updated,
       });
     } catch (err: any) {
+      if (err.code === 'P2025') {
+        res.status(404).json({ success: false, message: 'User not found' });
+        return;
+      }
       console.error('❌ Error removing user RFID:', err);
       res.status(500).json({
         success: false,

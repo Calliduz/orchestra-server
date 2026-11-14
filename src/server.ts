@@ -7,27 +7,6 @@ import { watchdogService } from './services/watchdog.service.js';
 
 const server = http.createServer(app);
 
-// Robust GET /health endpoint verifying database connectivity via prisma.$queryRaw
-app.get('/health', async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.status(200).json({
-      status: 'ONLINE',
-      database: 'connected',
-      uptime: process.uptime(),
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error: any) {
-    res.status(503).json({
-      status: 'ERROR',
-      database: 'disconnected',
-      uptime: process.uptime(),
-      timestamp: new Date().toISOString(),
-      error: error?.message || 'Database connection failure',
-    });
-  }
-});
-
 // Initialize Socket.io Telemetry Server
 initializeSocket(server);
 
@@ -45,6 +24,15 @@ server.listen(env.PORT, () => {
 
   // Start background watchdog for auto-closing expired/abandoned sessions
   watchdogService.start();
+});
+
+// Global Process Safety Guards
+process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
+  console.error('💥 [FATAL] Unhandled Promise Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('💥 [FATAL] Uncaught Exception:', err);
 });
 
 // Graceful Shutdown

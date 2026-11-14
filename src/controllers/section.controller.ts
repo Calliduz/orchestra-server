@@ -257,6 +257,10 @@ export class SectionController {
         data: updated,
       });
     } catch (err: any) {
+      if (err.code === 'P2025') {
+        res.status(404).json({ success: false, message: 'Section not found' });
+        return;
+      }
       res.status(500).json({ success: false, message: err.message || 'Failed to update section' });
     }
   }
