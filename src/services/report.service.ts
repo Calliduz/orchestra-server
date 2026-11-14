@@ -57,15 +57,20 @@ export class ReportService {
   }
 
   /**
-   * Generates PDF, CSV, and Excel reports for a completed session
+   * Helper to retrieve unified session report data, enrolled roster, and summary statistics
    */
-  async generateSessionReports(sessionId: string): Promise<{
-    pdfPath: string;
-    csvPath: string;
-    xlsxPath: string;
-    pdfBuffer: Buffer;
-    csvString: string;
-    xlsxBuffer: Buffer;
+  async getSessionReportData(sessionId: string): Promise<{
+    session: any;
+    roster: RosterItem[];
+    statsObj: {
+      totalEnrolled: number;
+      presentCount: number;
+      lateCount: number;
+      cutCount: number;
+      excusedCount: number;
+      absentCount: number;
+      attendanceRate: string;
+    };
   }> {
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
@@ -82,7 +87,6 @@ export class ReportService {
       throw new Error(`Session with ID ${sessionId} not found.`);
     }
 
-    // Fetch all enrolled students for the section
     const enrollments = await prisma.enrollment.findMany({
       where: { sectionId: session.sectionId },
       include: { student: true },
@@ -91,7 +95,6 @@ export class ReportService {
 
     const logsByStudent = new Map(session.attendanceLogs.map((log) => [log.studentId, log]));
 
-    // Construct unified roster
     const roster: RosterItem[] = enrollments.map((enr, i) => {
       const student = enr.student;
       const log = logsByStudent.get(student.id);
@@ -109,7 +112,6 @@ export class ReportService {
       };
     });
 
-    // Summary calculations
     const totalEnrolled = roster.length;
     const presentCount = roster.filter((r) => r.status === 'PRESENT').length;
     const lateCount = roster.filter((r) => r.status === 'LATE').length;
@@ -117,6 +119,295 @@ export class ReportService {
     const excusedCount = roster.filter((r) => r.status === 'EXCUSED').length;
     const absentCount = roster.filter((r) => r.status === 'ABSENT').length;
     const attendanceRate = totalEnrolled > 0 ? (((presentCount + lateCount + excusedCount) / totalEnrolled) * 100).toFixed(1) : '0';
+
+    return {
+      session,
+      roster,
+      statsObj: {
+        totalEnrolled,
+        presentCount,
+        lateCount,
+        cutCount,
+        excusedCount,
+        absentCount,
+        attendanceRate,
+      },
+    };
+  }
+
+  /**
+   * Generates Canvas SIS CSV export (Student ID, Name, Attendance Grade score out of 100)
+   */
+  async generateCanvasSisCsv(sessionId: string): Promise<string> {
+    const { roster } = await this.getSessionReportData(sessionId);
+    const rows = roster.map((item) => {
+      let grade = 0;
+      if (item.status === 'PRESENT') grade = 100;
+      else if (item.status === 'LATE') grade = 80;
+      else if (item.status === 'EXCUSED') grade = 100;
+      else if (item.status === 'CUT') grade = 0;
+      else if (item.status === 'ABSENT') grade = 0;
+
+      return {
+        'Student ID': item.studentId,
+        'Name': item.fullName,
+        'Attendance Grade': grade,
+      };
+    });
+
+    return csv.writeToString(rows, { headers: true });
+  }
+
+  /**
+   * Generates Moodle Attendance plugin CSV export (P, L, E, A notation columns)
+   */
+  async generateMoodleAttendanceCsv(sessionId: string): Promise<string> {
+    const { roster } = await this.getSessionReportData(sessionId);
+    const rows = roster.map((item) => {
+      let code = 'A';
+      let p = 0;
+      let l = 0;
+      let e = 0;
+      let a = 0;
+
+      if (item.status === 'PRESENT') {
+        code = 'P';
+        p = 1;
+      } else if (item.status === 'LATE') {
+        code = 'L';
+        l = 1;
+      } else if (item.status === 'EXCUSED') {
+        code = 'E';
+        e = 1;
+      } else {
+        code = 'A';
+        a = 1;
+      }
+
+      return {
+        'Student ID': item.studentId,
+        'Name': item.fullName,
+        'Email': item.email,
+        'Attendance Code': code,
+        'P': p,
+        'L': l,
+        'E': e,
+        'A': a,
+      };
+    });
+
+    return csv.writeToString(rows, { headers: true });
+  }
+
+  /**
+   * Generates Formal Institutional Master PDF with university header, punctuality breakdown, and instructor signature block
+   */
+  async generateInstitutionalMasterPdf(sessionId: string): Promise<Buffer> {
+    const { session, roster, statsObj } = await this.getSessionReportData(sessionId);
+
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margin: 36,
+        info: {
+          Title: `ORCHESTRA Institutional Master Attendance Manifest - ${session.section.sectionCode}`,
+          Author: 'University Registrar / ORCHESTRA Framework',
+          Subject: 'Formal Institutional Academic Attendance Audit',
+        },
+      });
+
+      const buffers: Buffer[] = [];
+      doc.on('data', (chunk) => buffers.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
+      doc.on('error', (err) => reject(err));
+
+      const brandDark = '#0F172A';
+      const brandNavy = '#1E3A8A';
+      const brandBlue = '#2563EB';
+      const brandGold = '#B45309';
+      const textMuted = '#475569';
+      const borderLine = '#CBD5E1';
+
+      // 1. UNIVERSITY FORMAL HEADER
+      doc.rect(36, 36, 523, 4).fill(brandNavy);
+
+      doc.fillColor(brandDark).font('Helvetica').fontSize(8).text('Republic of the Philippines', 36, 46, { align: 'center', width: 523 });
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(brandNavy).text('UNIVERSITY OF SCIENCE AND TECHNOLOGY OF SOUTHERN PHILIPPINES', 36, 57, { align: 'center', width: 523 });
+      doc.font('Helvetica-Bold').fontSize(10).fillColor(brandDark).text('COLLEGE OF COMPUTER STUDIES', 36, 72, { align: 'center', width: 523 });
+      doc.font('Helvetica').fontSize(8).fillColor(textMuted).text('Department of Information Technology & Computer Architecture Laboratory', 36, 85, { align: 'center', width: 523 });
+
+      // Decorative Accent Line
+      doc.moveTo(36, 98).lineTo(559, 98).lineWidth(1.5).strokeColor(brandNavy).stroke();
+      doc.moveTo(36, 101).lineTo(559, 101).lineWidth(0.5).strokeColor(brandGold).stroke();
+
+      // Document Title
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(brandNavy).text('OFFICIAL INSTITUTIONAL MASTER ATTENDANCE MANIFEST', 36, 108, { align: 'center', width: 523 });
+      doc.font('Helvetica-Oblique').fontSize(8).fillColor(textMuted).text('Automated Cryptographic Hardware Ingress Telemetry & Tamper-Evident Session Log', 36, 122, { align: 'center', width: 523 });
+
+      // 2. ACADEMIC SESSION METADATA BLOCK
+      const metaBoxY = 135;
+      doc.roundedRect(36, metaBoxY, 523, 56, 4).fillAndStroke('#F8FAFC', borderLine);
+
+      const col1X = 48;
+      const col2X = 220;
+      const col3X = 390;
+
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(textMuted).text('COURSE & SECTION:', col1X, metaBoxY + 8);
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(brandDark).text(`${session.section.sectionCode}`, col1X, metaBoxY + 18);
+      doc.font('Helvetica').fontSize(7.5).fillColor(textMuted).text(`${session.section.courseName}`, col1X, metaBoxY + 30, { width: 160 });
+
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(textMuted).text('INSTRUCTOR-IN-CHARGE:', col2X, metaBoxY + 8);
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(brandDark).text(`Prof. ${session.faculty.firstName} ${session.faculty.lastName}`, col2X, metaBoxY + 18);
+      doc.font('Helvetica').fontSize(7.5).fillColor(textMuted).text(`${session.faculty.email}`, col2X, metaBoxY + 30);
+
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(textMuted).text('LOCATION & TERMINAL NODE:', col3X, metaBoxY + 8);
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(brandDark).text(`${session.section.roomNumber} [${session.terminalId}]`, col3X, metaBoxY + 18);
+      const startFmt = this.format12HourShort(session.startTime);
+      const endFmt = session.endTime ? this.format12HourShort(session.endTime) : 'Ongoing';
+      const dateFmt = new Date(session.startTime).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      doc.font('Helvetica').fontSize(7.5).fillColor(textMuted).text(`${dateFmt} (${startFmt} - ${endFmt})`, col3X, metaBoxY + 30);
+
+      // 3. PUNCTUALITY COMPLIANCE BREAKDOWN BOX
+      const punctBoxY = 198;
+      doc.roundedRect(36, punctBoxY, 523, 44, 4).fillAndStroke('#F1F5F9', '#94A3B8');
+
+      // Grace period rule line
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(brandNavy).text(
+        `POLICY THRESHOLDS: Late Grace Window: ${session.lateThresholdMins}m | Session Cut-off: ${session.cutThresholdMins}m | Anti-Proxy Pacing: 3000ms`,
+        48,
+        punctBoxY + 6
+      );
+
+      // Metric Ribbon
+      const statCardW = 71;
+      const statCardGap = 4;
+      const statY = punctBoxY + 18;
+
+      const pCards = [
+        { label: 'ENROLLED', value: statsObj.totalEnrolled, color: '#0F172A' },
+        { label: 'PRESENT', value: statsObj.presentCount, color: '#065F46' },
+        { label: 'LATE', value: statsObj.lateCount, color: '#854D0E' },
+        { label: 'CUT', value: statsObj.cutCount, color: '#9A3412' },
+        { label: 'EXCUSED', value: statsObj.excusedCount, color: '#1E40AF' },
+        { label: 'ABSENT', value: statsObj.absentCount, color: '#991B1B' },
+        { label: 'ATTENDANCE', value: `${statsObj.attendanceRate}%`, color: '#1E3A8A' },
+      ];
+
+      pCards.forEach((card, idx) => {
+        const x = 44 + idx * (statCardW + statCardGap);
+        doc.roundedRect(x, statY, statCardW, 20, 2).fill('#FFFFFF');
+        doc.font('Helvetica-Bold').fontSize(9).fillColor(card.color).text(`${card.value}`, x, statY + 3, { width: statCardW, align: 'center' });
+        doc.font('Helvetica-Bold').fontSize(6).fillColor(textMuted).text(card.label, x, statY + 12, { width: statCardW, align: 'center' });
+      });
+
+      // 4. ATTENDANCE ROSTER TABLE
+      let tableY = 250;
+      const renderTableHeader = (y: number) => {
+        doc.rect(36, y, 523, 16).fill(brandNavy);
+        doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(7);
+        doc.text('#', 42, y + 5);
+        doc.text('STUDENT ID', 58, y + 5);
+        doc.text('STUDENT FULL NAME', 140, y + 5);
+        doc.text('CHECK-IN (12H)', 275, y + 5);
+        doc.text('AUTH METHOD', 345, y + 5);
+        doc.text('STATUS', 425, y + 5);
+        doc.text('AUDIT REMARKS', 475, y + 5);
+      };
+
+      renderTableHeader(tableY);
+      tableY += 16;
+
+      roster.forEach((row, i) => {
+        // Leave room for 100pt signature block on the last page
+        if (tableY > 640) {
+          doc.addPage();
+          tableY = 40;
+          renderTableHeader(tableY);
+          tableY += 16;
+        }
+
+        const rowBg = i % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
+        doc.rect(36, tableY, 523, 15).fill(rowBg);
+
+        doc.fillColor(brandDark).font('Helvetica').fontSize(7.5);
+        doc.text(`${row.index}`, 42, tableY + 4);
+        doc.font('Helvetica-Bold').text(row.studentId, 58, tableY + 4);
+        doc.font('Helvetica').text(row.fullName, 140, tableY + 4);
+        doc.text(row.tapTime, 275, tableY + 4);
+        doc.text(row.authMethod, 345, tableY + 4);
+
+        let statusColor = '#065F46';
+        if (row.status === 'LATE') statusColor = '#854D0E';
+        if (row.status === 'CUT') statusColor = '#9A3412';
+        if (row.status === 'ABSENT') statusColor = '#991B1B';
+        if (row.status === 'EXCUSED') statusColor = '#1E40AF';
+
+        doc.font('Helvetica-Bold').fillColor(statusColor).text(row.status, 425, tableY + 4);
+        doc.font('Helvetica').fontSize(6.5).fillColor(textMuted).text(row.remarks.slice(0, 20), 475, tableY + 4);
+
+        tableY += 15;
+      });
+
+      // 5. INSTRUCTOR & INSTITUTIONAL SIGNATURE BLOCK
+      let sigBlockY = Math.max(tableY + 15, 680);
+      if (sigBlockY > 690) {
+        doc.addPage();
+        sigBlockY = 60;
+      }
+
+      doc.moveTo(36, sigBlockY).lineTo(559, sigBlockY).lineWidth(0.5).strokeColor(borderLine).stroke();
+
+      doc.font('Helvetica-Oblique').fontSize(6.5).fillColor(textMuted).text(
+        'CERTIFICATION: I hereby certify under administrative authority that the ingress entries above were electronically interrogated and cryptographically validated via the ORCHESTRA Edge Terminal trust boundary.',
+        36,
+        sigBlockY + 5,
+        { width: 523, align: 'justify' }
+      );
+
+      const sigLineY = sigBlockY + 45;
+      const leftSigX = 50;
+      const rightSigX = 330;
+      const sigLineW = 180;
+
+      // Left: Faculty Instructor
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(brandDark).text('CERTIFIED CORRECT:', leftSigX, sigBlockY + 20);
+      doc.moveTo(leftSigX, sigLineY).lineTo(leftSigX + sigLineW, sigLineY).strokeColor(brandDark).lineWidth(1).stroke();
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(brandDark).text(`Prof. ${session.faculty.firstName} ${session.faculty.lastName}`, leftSigX, sigLineY + 4);
+      doc.font('Helvetica').fontSize(7).fillColor(textMuted).text('Course Instructor / Faculty In-Charge', leftSigX, sigLineY + 14);
+      doc.font('Helvetica').fontSize(7).fillColor(textMuted).text(`Date: ${new Date().toLocaleDateString('en-US')}`, leftSigX, sigLineY + 23);
+
+      // Right: Dean / Department Chair
+      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(brandDark).text('VERIFIED & RECORDED:', rightSigX, sigBlockY + 20);
+      doc.moveTo(rightSigX, sigLineY).lineTo(rightSigX + sigLineW, sigLineY).strokeColor(brandDark).lineWidth(1).stroke();
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(brandDark).text('Department Chairperson / Academic Dean', rightSigX, sigLineY + 4);
+      doc.font('Helvetica').fontSize(7).fillColor(textMuted).text('College of Computer Studies', rightSigX, sigLineY + 14);
+      doc.font('Helvetica').fontSize(7).fillColor(textMuted).text('Date Verified: ________________________', rightSigX, sigLineY + 23);
+
+      // Footer
+      const footerY = 800;
+      doc.font('Helvetica').fontSize(6.5).fillColor(textMuted).text(
+        `Official Institutional Copy | Session ID: ${session.id.slice(0, 12)} | Terminal: ${session.terminalId} | Generated: ${new Date().toLocaleString('en-US')}`,
+        36,
+        footerY,
+        { align: 'center', width: 523 }
+      );
+
+      doc.end();
+    });
+  }
+
+  /**
+   * Generates PDF, CSV, and Excel reports for a completed session
+   */
+  async generateSessionReports(sessionId: string): Promise<{
+    pdfPath: string;
+    csvPath: string;
+    xlsxPath: string;
+    pdfBuffer: Buffer;
+    csvString: string;
+    xlsxBuffer: Buffer;
+  }> {
+    const { session, roster, statsObj } = await this.getSessionReportData(sessionId);
 
     const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
     const pdfFilename = `ORCHESTRA_Roster_${session.section.sectionCode}_${sessionId.slice(0, 8)}_${timestampStr}.pdf`;
@@ -126,16 +417,6 @@ export class ReportService {
     const pdfPath = path.join(this.reportsDir, pdfFilename);
     const csvPath = path.join(this.reportsDir, csvFilename);
     const xlsxPath = path.join(this.reportsDir, xlsxFilename);
-
-    const statsObj = {
-      totalEnrolled,
-      presentCount,
-      lateCount,
-      cutCount,
-      excusedCount,
-      absentCount,
-      attendanceRate,
-    };
 
     // 1. Generate CSV
     const csvString = await this.generateCsvFile(csvPath, session, roster);

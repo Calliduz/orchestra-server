@@ -254,6 +254,8 @@ export class SessionController {
         },
       });
 
+      hardwareService.clearQuietModeOverride(activeTerminalId);
+
       // Broadcast telemetry
       const activeDetails = await sessionService.getActiveSession(activeTerminalId);
       emitSessionStarted({
@@ -373,6 +375,78 @@ export class SessionController {
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Attendance_${id.slice(0, 8)}.xlsx`);
       res.send(xlsxBuffer);
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
+    }
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/export/canvas
+   * 1-Click LMS Gradebook export for Canvas SIS (Student ID, Name, Grade / 100)
+   */
+  async downloadCanvasCsv(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const session = await prisma.session.findUnique({ where: { id } });
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Session not found' });
+        return;
+      }
+      assertSessionOwnership(req.user, session.facultyId);
+
+      const csvString = await reportService.generateCanvasSisCsv(id);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=Canvas_SIS_Attendance_${id.slice(0, 8)}.csv`);
+      res.send(csvString);
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
+    }
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/export/moodle
+   * 1-Click LMS Gradebook export for Moodle Attendance plugin (P, L, E, A notation columns)
+   */
+  async downloadMoodleCsv(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const session = await prisma.session.findUnique({ where: { id } });
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Session not found' });
+        return;
+      }
+      assertSessionOwnership(req.user, session.facultyId);
+
+      const csvString = await reportService.generateMoodleAttendanceCsv(id);
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=Moodle_Attendance_${id.slice(0, 8)}.csv`);
+      res.send(csvString);
+    } catch (err: unknown) {
+      res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
+    }
+  }
+
+  /**
+   * GET /api/v1/sessions/:id/export/institutional-pdf
+   * Formal Institutional Master PDF with university header, punctuality breakdown, and instructor signature block
+   */
+  async downloadInstitutionalPdf(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const session = await prisma.session.findUnique({ where: { id } });
+      if (!session) {
+        res.status(404).json({ success: false, message: 'Session not found' });
+        return;
+      }
+      assertSessionOwnership(req.user, session.facultyId);
+
+      const pdfBuffer = await reportService.generateInstitutionalMasterPdf(id);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename=ORCHESTRA_Institutional_Master_${id.slice(0, 8)}.pdf`);
+      res.send(pdfBuffer);
     } catch (err: unknown) {
       res.status(getErrorStatusCode(err, 500)).json({ success: false, message: getErrorMessage(err) });
     }

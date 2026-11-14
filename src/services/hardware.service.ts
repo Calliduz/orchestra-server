@@ -2,7 +2,20 @@ import { SessionStatus, AttendanceStatus, AuthMethod, Role } from '@prisma/clien
 import prisma from '../config/prisma.js';
 import { sessionService } from './session.service.js';
 import { mailerService } from './mailer.service.js';
-import { emitSessionStarted, emitAttendanceUpdated, emitCardScanned, emitEnrollmentModeChanged } from '../sockets/telemetry.socket.js';
+import { emitSessionStarted, emitAttendanceUpdated, emitCardScanned, emitEnrollmentModeChanged, emitTerminalHeartbeat, emitQuietModeChanged } from '../sockets/telemetry.socket.js';
+
+export interface TerminalTelemetry {
+  terminalId: string;
+  rssi: number;
+  freeHeap: number;
+  uptimeSec: number;
+  readerStatus: string;
+  version: string;
+  lastSeen: string | null;
+  status: 'ONLINE' | 'WEAK_RSSI' | 'OFFLINE';
+  roomNumber?: string;
+  isQuietMode?: boolean;
+}
 
 export interface HardwareTapResult {
   statusCode: number;
@@ -46,8 +59,172 @@ export class HardwareService {
   // Interlock tracker: Prevents rapid re-opening if terminal was recently closed
   private terminalLastClosed = new Map<string, number>();
 
+  // Fleet telemetry in-memory cache
+  private terminalFleet = new Map<string, TerminalTelemetry>();
+
+  // Quiet Mode explicit toggle overrides (terminalId -> boolean)
+  private quietModeOverrides = new Map<string, boolean>();
+
+  public async recordHeartbeat(data: {
+    terminalId: string;
+    rssi: number;
+    freeHeap: number;
+    uptimeSec: number;
+    readerStatus?: string | null;
+    version?: string | null;
+  }): Promise<TerminalTelemetry> {
+    const { terminalId, rssi, freeHeap, uptimeSec, readerStatus, version } = data;
+    const nowIso = new Date().toISOString();
+
+    // Determine signal status based on RSSI
+    let status: 'ONLINE' | 'WEAK_RSSI' | 'OFFLINE' = 'ONLINE';
+    if (rssi < -80) {
+      status = 'WEAK_RSSI';
+    }
+
+    // Lookup room number from section table if available
+    const section = await prisma.section.findFirst({
+      where: { terminalId },
+      select: { roomNumber: true },
+    });
+
+    const isQuiet = await this.isQuietModeActive(terminalId);
+
+    const telemetry: TerminalTelemetry = {
+      terminalId,
+      rssi,
+      freeHeap,
+      uptimeSec,
+      readerStatus: readerStatus || 'OK',
+      version: version || 'v1.0.4',
+      lastSeen: nowIso,
+      status,
+      roomNumber: section?.roomNumber || 'CLASSROOM',
+      isQuietMode: isQuiet,
+    };
+
+    this.terminalFleet.set(terminalId, telemetry);
+    emitTerminalHeartbeat(telemetry);
+
+    return telemetry;
+  }
+
+  public async getFleetTerminals(): Promise<TerminalTelemetry[]> {
+    // Also discover any configured terminals from sections in the database
+    const sections = await prisma.section.findMany({
+      select: { terminalId: true, roomNumber: true },
+      distinct: ['terminalId'],
+    });
+
+    const now = Date.now();
+    const result: TerminalTelemetry[] = [];
+
+    // Ensure all provisioned terminals exist in the cache
+    for (const sec of sections) {
+      if (!this.terminalFleet.has(sec.terminalId)) {
+        this.terminalFleet.set(sec.terminalId, {
+          terminalId: sec.terminalId,
+          rssi: -99,
+          freeHeap: 0,
+          uptimeSec: 0,
+          readerStatus: 'STANDBY',
+          version: 'v1.0.4',
+          lastSeen: null,
+          status: 'OFFLINE',
+          roomNumber: sec.roomNumber,
+          isQuietMode: false,
+        });
+      }
+    }
+
+    // Default primary terminal if none in DB
+    if (!this.terminalFleet.has('TERM-CL304')) {
+      this.terminalFleet.set('TERM-CL304', {
+        terminalId: 'TERM-CL304',
+        rssi: -65,
+        freeHeap: 215000,
+        uptimeSec: 3600,
+        readerStatus: 'OK',
+        version: 'v1.0.4-PRO',
+        lastSeen: new Date().toISOString(),
+        status: 'ONLINE',
+        roomNumber: 'LAB-304',
+        isQuietMode: false,
+      });
+    }
+
+    for (const [id, tele] of this.terminalFleet.entries()) {
+      let currentStatus = tele.status;
+      if (tele.lastSeen) {
+        const elapsedSinceLastSeen = now - new Date(tele.lastSeen).getTime();
+        if (elapsedSinceLastSeen > 120000) { // 2 minutes threshold for offline alert
+          currentStatus = 'OFFLINE';
+        }
+      } else {
+        currentStatus = 'OFFLINE';
+      }
+
+      const isQuiet = await this.isQuietModeActive(id);
+
+      result.push({
+        ...tele,
+        status: currentStatus,
+        isQuietMode: isQuiet,
+      });
+    }
+
+    return result;
+  }
+
+  public async isQuietModeActive(terminalId: string): Promise<boolean> {
+    if (this.quietModeOverrides.has(terminalId)) {
+      return this.quietModeOverrides.get(terminalId)!;
+    }
+
+    // Check active session for this terminal
+    const active = await sessionService.getActiveSession(terminalId);
+    if (active && !active.isLocked && active.session) {
+      const elapsedMins = Math.floor((Date.now() - new Date(active.session.startTime).getTime()) / 60000);
+      if (elapsedMins >= (active.session.lateThresholdMins || 15)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  public async toggleQuietMode(terminalId: string, enabled?: boolean): Promise<{ terminalId: string; isQuietMode: boolean }> {
+    let nextState: boolean;
+    if (typeof enabled === 'boolean') {
+      nextState = enabled;
+    } else {
+      const current = await this.isQuietModeActive(terminalId);
+      nextState = !current;
+    }
+
+    this.quietModeOverrides.set(terminalId, nextState);
+    emitQuietModeChanged({ terminalId, isQuietMode: nextState });
+
+    // Update fleet cache if terminal exists
+    const cached = this.terminalFleet.get(terminalId);
+    if (cached) {
+      cached.isQuietMode = nextState;
+      this.terminalFleet.set(terminalId, cached);
+    }
+
+    return { terminalId, isQuietMode: nextState };
+  }
+
+  public clearQuietModeOverride(terminalId: string): void {
+    if (this.quietModeOverrides.has(terminalId)) {
+      this.quietModeOverrides.delete(terminalId);
+      console.log(`🔇 [QUIET_MODE] Cleared quiet mode override for terminal ${terminalId}`);
+    }
+  }
+
   public recordTerminalClosed(terminalId: string): void {
     this.terminalLastClosed.set(terminalId, Date.now());
+    this.clearQuietModeOverride(terminalId);
     console.log(`🔒 [LOCKOUT INTERLOCK] Terminal ${terminalId} marked recently closed at ${new Date().toISOString()}`);
   }
 

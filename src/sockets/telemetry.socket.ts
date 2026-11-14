@@ -172,6 +172,33 @@ export function emitCardScanned(payload: {
   io.emit('card:scanned', payload);
 }
 
+export function emitTerminalHeartbeat(payload: {
+  terminalId: string;
+  rssi: number;
+  freeHeap: number;
+  uptimeSec: number;
+  readerStatus: string;
+  version: string;
+  lastSeen: string | null;
+  status: 'ONLINE' | 'WEAK_RSSI' | 'OFFLINE';
+  roomNumber?: string;
+  isQuietMode?: boolean;
+}) {
+  if (!io) return;
+  io.emit('terminal:heartbeat', payload);
+  io.to(`terminal:${payload.terminalId}`).emit('terminal:heartbeat', payload);
+}
+
+export function emitQuietModeChanged(payload: {
+  terminalId: string;
+  isQuietMode: boolean;
+}) {
+  if (!io) return;
+  console.log(`📢 Broadcasting [terminal:quiet-mode] terminal=${payload.terminalId} quiet=${payload.isQuietMode}`);
+  io.emit('terminal:quiet-mode', payload);
+  io.to(`terminal:${payload.terminalId}`).emit('terminal:quiet-mode', payload);
+}
+
 export function emitEnrollmentModeChanged(payload: {
   active: boolean;
   terminalId?: string;

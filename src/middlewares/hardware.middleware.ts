@@ -35,19 +35,22 @@ export function hardwareOrJwtAuth(
   res: Response,
   next: NextFunction,
 ): void {
-  const apiKey = req.headers["x-api-key"];
+  const queryApiKey = typeof req.query?.apiKey === 'string' ? req.query.apiKey : undefined;
+  const apiKey = req.headers["x-api-key"] || queryApiKey;
   if (apiKey && apiKey === env.HARDWARE_API_KEY) {
     return next();
   }
 
   const authHeader = req.headers["authorization"];
-  if (authHeader) {
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader;
-    if (token === env.HARDWARE_API_KEY) {
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token : undefined;
+  const rawToken = authHeader ? (authHeader.startsWith("Bearer ") ? authHeader.slice(7) : authHeader) : queryToken;
+
+  if (rawToken) {
+    if (rawToken === env.HARDWARE_API_KEY) {
       return next();
     }
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as any;
+      const decoded = jwt.verify(rawToken, env.JWT_SECRET) as any;
       req.user = decoded;
       return next();
     } catch {

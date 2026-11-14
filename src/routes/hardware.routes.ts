@@ -12,6 +12,9 @@ router.post('/tap', hardwareAuth, hardwareTapLimiter, (req, res) => hardwareCont
 router.post('/otp', hardwareAuth, keypadOtpLimiter, (req, res) => hardwareController.handleKeypadOtp(req, res));
 router.post('/select-section', hardwareOrJwtAuth, (req, res) => hardwareController.handleSelectSection(req, res));
 router.post('/offline-sync', hardwareAuth, (req, res) => hardwareController.handleOfflineSync(req, res));
+router.post('/heartbeat', hardwareOrJwtAuth, (req, res) => hardwareController.handleHeartbeat(req, res));
+router.get('/terminals', hardwareOrJwtAuth, (req, res) => hardwareController.getTerminals(req, res));
+router.post('/quiet-mode', hardwareOrJwtAuth, (req, res) => hardwareController.toggleQuietMode(req, res));
 router.get('/status/:terminalId', hardwareOrJwtAuth, (req, res) => hardwareController.getTerminalStatus(req, res));
 router.get('/last-scanned', requireAuth, requireRole(Role.ADMIN), (req, res) => hardwareController.getLastScanned(req, res));
 

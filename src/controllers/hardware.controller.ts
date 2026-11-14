@@ -27,6 +27,20 @@ const selectSectionSchema = z.object({
   message: 'Either sectionId or numeric index must be provided',
 });
 
+const heartbeatSchema = z.object({
+  terminalId: z.string().min(1, 'Terminal ID is required'),
+  rssi: z.coerce.number(),
+  freeHeap: z.coerce.number(),
+  uptimeSec: z.coerce.number(),
+  readerStatus: z.string().nullish().default('OK'),
+  version: z.string().nullish().default('v1.0.4'),
+});
+
+const quietModeSchema = z.object({
+  terminalId: z.string().min(1, 'Terminal ID is required'),
+  enabled: z.boolean().optional(),
+});
+
 export class HardwareController {
   /**
    * POST /api/v1/hardware/tap
@@ -144,6 +158,7 @@ export class HardwareController {
       const sessionData = await sessionService.getActiveSession(terminalId);
       const enrollment = hardwareService.getEnrollmentSession(terminalId);
       const authorizedFaculty = await hardwareService.getAuthorizedFaculty(terminalId);
+      const isQuietMode = await hardwareService.isQuietModeActive(terminalId);
 
       res.status(200).json({
         success: true,
@@ -153,6 +168,7 @@ export class HardwareController {
         enrollment,
         authorizedFaculty, // Local copy of professor/admin UIDs for offline caching
         offlineSyncSupported: true,
+        isQuietMode,
         session: sessionData.session
           ? {
               id: sessionData.session.id,
@@ -160,6 +176,9 @@ export class HardwareController {
               courseName: sessionData.session.courseName,
               facultyName: sessionData.session.facultyName,
               startTime: sessionData.session.startTime,
+              lateThresholdMins: sessionData.session.lateThresholdMins,
+              cutThresholdMins: sessionData.session.cutThresholdMins,
+              isQuietMode,
             }
           : null,
       });
@@ -167,6 +186,90 @@ export class HardwareController {
       res.status(500).json({
         success: false,
         message: err.message || 'Error fetching terminal status',
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/hardware/heartbeat
+   * Periodic edge telemetry from ESP32 background network task
+   */
+  async handleHeartbeat(req: Request, res: Response): Promise<void> {
+    try {
+      const parsed = heartbeatSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          success: false,
+          code: 'INVALID_PAYLOAD',
+          message: parsed.error.issues[0]?.message || 'Invalid heartbeat payload',
+        });
+        return;
+      }
+
+      const telemetry = await hardwareService.recordHeartbeat(parsed.data);
+
+      res.status(200).json({
+        success: true,
+        message: 'Heartbeat acknowledged',
+        data: telemetry,
+      });
+    } catch (err: any) {
+      console.error('Error handling terminal heartbeat:', err);
+      res.status(500).json({
+        success: false,
+        message: err.message || 'Error recording terminal heartbeat',
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/hardware/terminals
+   * Expose fleet health cards list for TerminalMonitorPage
+   */
+  async getTerminals(_req: Request, res: Response): Promise<void> {
+    try {
+      const terminals = await hardwareService.getFleetTerminals();
+      res.status(200).json({
+        success: true,
+        data: terminals,
+      });
+    } catch (err: any) {
+      console.error('Error fetching terminal fleet:', err);
+      res.status(500).json({
+        success: false,
+        message: err.message || 'Error fetching terminal fleet',
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/hardware/quiet-mode
+   * Toggle lecture quiet mode audio damping on terminal
+   */
+  async toggleQuietMode(req: Request, res: Response): Promise<void> {
+    try {
+      const parsed = quietModeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          success: false,
+          message: parsed.error.issues[0]?.message || 'Terminal ID is required',
+        });
+        return;
+      }
+
+      const { terminalId, enabled } = parsed.data;
+      const result = await hardwareService.toggleQuietMode(terminalId, enabled);
+
+      res.status(200).json({
+        success: true,
+        message: `Quiet mode ${result.isQuietMode ? 'enabled' : 'disabled'} on ${terminalId}`,
+        data: result,
+      });
+    } catch (err: any) {
+      console.error('Error toggling quiet mode:', err);
+      res.status(500).json({
+        success: false,
+        message: err.message || 'Error toggling quiet mode',
       });
     }
   }

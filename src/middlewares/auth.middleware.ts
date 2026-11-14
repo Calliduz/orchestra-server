@@ -15,7 +15,9 @@ export interface AuthRequest extends Request {
 
 export function requireAuth(req: AuthRequest, res: Response, next: NextFunction): void {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
+  const token = bearerToken || queryToken;
 
   if (!token) {
     res.status(401).json({ success: false, message: 'Authentication required. No token provided.' });

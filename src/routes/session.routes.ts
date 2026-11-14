@@ -25,7 +25,10 @@ router.post('/:id/close', requireAuth, requireRole(Role.FACULTY, Role.ADMIN), (r
 
 // Export & Reports
 router.get('/:id/export/pdf', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sessionController.downloadPdf(req, res));
+router.get('/:id/export/institutional-pdf', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sessionController.downloadInstitutionalPdf(req, res));
 router.get('/:id/export/csv', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sessionController.downloadCsv(req, res));
+router.get('/:id/export/canvas', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sessionController.downloadCanvasCsv(req, res));
+router.get('/:id/export/moodle', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sessionController.downloadMoodleCsv(req, res));
 router.get('/:id/export/xlsx', requireAuth, requireRole(Role.ADMIN, Role.FACULTY), (req, res) => sessionController.downloadExcel(req, res));
 router.post('/:id/email-report', requireAuth, requireRole(Role.FACULTY, Role.ADMIN), (req, res) => sessionController.emailReport(req, res));
 
