@@ -47,6 +47,7 @@ export class StudentController {
               },
             },
           },
+          excuseRequest: true,
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -83,6 +84,9 @@ export class StudentController {
         id: log.id,
         session: {
           id: log.session.id,
+          startTime: log.session?.startTime
+            ? new Date(log.session.startTime).toISOString()
+            : (log.tapTimestamp || log.createdAt).toISOString(),
           courseCode: log.session.section.sectionCode,
           courseName: log.session.section.courseName,
           room: log.session.section.roomNumber,
@@ -90,11 +94,20 @@ export class StudentController {
           sectionCode: log.session.section.sectionCode,
           facultyName: `${log.session.faculty.firstName} ${log.session.faculty.lastName}`,
         },
-        timestamp: (log.tapTimestamp || log.createdAt).toISOString(),
+        timestamp: (log.tapTimestamp || log.session?.startTime || log.createdAt).toISOString(),
         status: log.status,
         authMethod: log.authMethod,
         isManualOverride: log.isManualOverride,
         overrideReason: log.overrideReason,
+        excuseRequest: log.excuseRequest
+          ? {
+              id: log.excuseRequest.id,
+              status: log.excuseRequest.status,
+              reason: log.excuseRequest.reason,
+              reviewNotes: log.excuseRequest.reviewNotes,
+              reviewedAt: log.excuseRequest.reviewedAt ? log.excuseRequest.reviewedAt.toISOString() : null,
+            }
+          : null,
       }));
 
       res.status(200).json({

@@ -10,6 +10,7 @@ const router = Router();
 // Edge ESP32 endpoints guarded by hardware API key and rate limiters
 router.post('/tap', hardwareAuth, hardwareTapLimiter, (req, res) => hardwareController.handleCardTap(req, res));
 router.post('/otp', hardwareAuth, keypadOtpLimiter, (req, res) => hardwareController.handleKeypadOtp(req, res));
+router.post('/select-section', hardwareOrJwtAuth, (req, res) => hardwareController.handleSelectSection(req, res));
 router.post('/offline-sync', hardwareAuth, (req, res) => hardwareController.handleOfflineSync(req, res));
 router.get('/status/:terminalId', hardwareOrJwtAuth, (req, res) => hardwareController.getTerminalStatus(req, res));
 router.get('/last-scanned', requireAuth, requireRole(Role.ADMIN), (req, res) => hardwareController.getLastScanned(req, res));

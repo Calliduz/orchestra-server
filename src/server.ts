@@ -3,6 +3,7 @@ import app from './app.js';
 import { env } from './config/env.js';
 import { initializeSocket } from './sockets/telemetry.socket.js';
 import prisma from './config/prisma.js';
+import { watchdogService } from './services/watchdog.service.js';
 
 const server = http.createServer(app);
 
@@ -41,11 +42,15 @@ server.listen(env.PORT, () => {
   console.log(`🛡️ Hardware API Key:   ${env.HARDWARE_API_KEY}`);
   console.log(`🏢 Neon DB URL:        Connected via AWS ap-southeast-1`);
   console.log('======================================================\n');
+
+  // Start background watchdog for auto-closing expired/abandoned sessions
+  watchdogService.start();
 });
 
 // Graceful Shutdown
 process.on('SIGTERM', async () => {
   console.log('🛑 SIGTERM received. Closing HTTP server and database pool...');
+  watchdogService.stop();
   server.close(async () => {
     await prisma.$disconnect();
     process.exit(0);
@@ -54,6 +59,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   console.log('🛑 SIGINT received. Closing HTTP server and database pool...');
+  watchdogService.stop();
   server.close(async () => {
     await prisma.$disconnect();
     process.exit(0);

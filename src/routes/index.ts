@@ -8,6 +8,8 @@ import sectionRoutes from './section.routes.js';
 import enrollmentRoutes from './enrollment.routes.js';
 import analyticsRoutes from './analytics.routes.js';
 import studentRoutes from './student.routes.js';
+import bulkImportRoutes from './bulk-import.routes.js';
+import excuseRoutes from './excuse.routes.js';
 import prisma from '../config/prisma.js';
 
 const router = Router();
@@ -21,6 +23,8 @@ router.use('/sections', sectionRoutes);
 router.use('/enrollments', enrollmentRoutes);
 router.use('/analytics', analyticsRoutes);
 router.use('/students', studentRoutes);
+router.use('/bulk-import', bulkImportRoutes);
+router.use('/excuses', excuseRoutes);
 
 // Health check endpoint
 router.get('/health', async (_req, res) => {

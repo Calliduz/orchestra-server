@@ -318,7 +318,7 @@ export class SessionService {
   /**
    * Finalizes class session, marks absent students, generates reports and emails faculty
    */
-  async closeSession(sessionId: string) {
+  async closeSession(sessionId: string, isAutoClosed: boolean = false) {
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       include: {
@@ -335,17 +335,8 @@ export class SessionService {
       throw new Error('Session is not currently open.');
     }
 
-    // 1. Mark session as CLOSED
+    // 1. Identify all absent students (enrolled students with no recorded attendance log)
     const now = new Date();
-    await prisma.session.update({
-      where: { id: sessionId },
-      data: {
-        status: SessionStatus.CLOSED,
-        endTime: now,
-      },
-    });
-
-    // 2. Auto-mark absent: Find all enrolled students without logs
     const enrollments = await prisma.enrollment.findMany({
       where: { sectionId: session.sectionId },
     });
@@ -355,22 +346,34 @@ export class SessionService {
       select: { studentId: true },
     });
     const loggedStudentIds = new Set(existingLogs.map((l) => l.studentId));
-
     const absentStudents = enrollments.filter((e) => !loggedStudentIds.has(e.studentId));
 
-    for (const enr of absentStudents) {
-      await prisma.attendanceLog.create({
+    // 2. Atomically finalize session and batch-insert all absent logs via transaction
+    await prisma.$transaction(async (tx) => {
+      await tx.session.update({
+        where: { id: sessionId },
         data: {
-          sessionId,
-          studentId: enr.studentId,
-          status: AttendanceStatus.ABSENT,
-          authMethod: AuthMethod.AUTO_ABSENT,
-          tapTimestamp: null,
-          isManualOverride: false,
-          overrideReason: 'Unlogged at Session Close',
+          status: SessionStatus.CLOSED,
+          endTime: now,
+          isAutoClosed,
         },
       });
-    }
+
+      if (absentStudents.length > 0) {
+        await tx.attendanceLog.createMany({
+          data: absentStudents.map((enr) => ({
+            sessionId,
+            studentId: enr.studentId,
+            status: AttendanceStatus.ABSENT,
+            authMethod: AuthMethod.AUTO_ABSENT,
+            tapTimestamp: null,
+            isManualOverride: false,
+            overrideReason: 'Unlogged at Session Close',
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
 
     // 3. Calculate final stats & roster
     const finalSession = await prisma.session.findUnique({
@@ -399,6 +402,7 @@ export class SessionService {
       sectionCode: session.section.sectionCode,
       courseName: session.section.courseName,
       endTime: now.toISOString(),
+      isAutoClosed,
       stats: finalStats,
       roster: finalRoster,
     });
@@ -417,11 +421,17 @@ export class SessionService {
           xlsxPath,
           stats: finalStats,
         });
-        await prisma.session.update({
+        const sessionExists = await prisma.session.findUnique({
           where: { id: sessionId },
-          data: { reportSentAt: new Date() },
+          select: { id: true },
         });
-        console.log(`📧 Master attendance report dispatched to ${session.faculty.email}`);
+        if (sessionExists) {
+          await prisma.session.update({
+            where: { id: sessionId },
+            data: { reportSentAt: new Date() },
+          });
+          console.log(`📧 Master attendance report dispatched to ${session.faculty.email}`);
+        }
       } catch (err) {
         console.error('⚠️ Background report generation / email error:', err);
       }

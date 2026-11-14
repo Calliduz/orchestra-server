@@ -17,6 +17,16 @@ const otpSchema = z.object({
   message: 'OTP PIN (code or otp) is required',
 });
 
+const selectSectionSchema = z.object({
+  terminalId: z.string().min(1, 'Terminal ID is required'),
+  sectionId: z.string().optional(),
+  index: z.union([z.number(), z.string().regex(/^\d+$/).transform(Number)]).optional(),
+  facultyId: z.string().optional(),
+  facultyUid: z.string().optional(),
+}).refine((data) => data.sectionId || (data.index !== undefined), {
+  message: 'Either sectionId or numeric index must be provided',
+});
+
 export class HardwareController {
   /**
    * POST /api/v1/hardware/tap
@@ -85,6 +95,40 @@ export class HardwareController {
         success: false,
         code: 'ERROR',
         message: err.message || 'Internal keypad OTP processing error',
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/hardware/select-section
+   * Hardware or dashboard section selection when disambiguation is required
+   */
+  async handleSelectSection(req: Request, res: Response): Promise<void> {
+    try {
+      const parsed = selectSectionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          success: false,
+          code: 'INVALID_PAYLOAD',
+          message: parsed.error.issues[0]?.message || 'Invalid section selection payload',
+        });
+        return;
+      }
+
+      const result = await hardwareService.selectSection(parsed.data);
+
+      res.status(result.statusCode).json({
+        success: result.success,
+        code: result.code,
+        message: result.message,
+        data: result.data,
+      });
+    } catch (err: any) {
+      console.error('❌ Error handling section selection:', err);
+      res.status(500).json({
+        success: false,
+        code: 'ERROR',
+        message: err.message || 'Internal error processing section selection',
       });
     }
   }

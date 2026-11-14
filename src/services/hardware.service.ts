@@ -19,6 +19,7 @@ export interface HardwareTapResult {
     | 'UNREGISTERED_CARD'
     | 'ENROLLMENT_CAPTURED'
     | 'FACULTY_BADGE_REQUIRED'
+    | 'SECTION_DISAMBIGUATION_REQUIRED'
     | 'ERROR';
   message: string;
   data?: any;
@@ -594,14 +595,13 @@ export class HardwareService {
       }
 
       // If Faculty scans master badge -> UNLOCK TERMINAL & OPEN SESSION
-      // 1. Try finding section specifically assigned to this faculty on this terminal
-      const section = await prisma.section.findFirst({
+      const facultySections = await prisma.section.findMany({
         where: { terminalId, facultyId: cardHolder.id },
+        orderBy: { id: 'asc' },
         include: { faculty: true },
       });
 
-      // 3. Security Boundary: If this terminal belongs to another faculty, REJECT unauthorized faculty!
-      if (!section) {
+      if (facultySections.length === 0) {
         const assignedSection = await prisma.section.findFirst({
           where: { terminalId },
           include: { faculty: true },
@@ -623,6 +623,46 @@ export class HardwareService {
           code: 'ERROR',
           message: `No course section configured for Terminal ID ${terminalId}.`,
         };
+      }
+
+      let section: any = null;
+
+      if (facultySections.length === 1) {
+        section = facultySections[0];
+      } else {
+        // Schedule-Aware Section Resolver
+        const matched = this.filterSectionsBySchedule(facultySections, now);
+
+        if (matched.length === 1) {
+          section = matched[0];
+          console.log(`🎯 [SCHEDULE RESOLVER] Auto-selected section ${section.sectionCode} based on current schedule window.`);
+        } else {
+          // Multiple match schedule or none match immediate schedule window -> prompt OLED disambiguation
+          const candidateList = matched.length > 1 ? matched : facultySections;
+          console.log(`🤔 [DISAMBIGUATION REQUIRED] Terminal ${terminalId} has ${candidateList.length} candidate sections for Prof. ${cardHolder.lastName}`);
+          return {
+            statusCode: 200,
+            success: true,
+            code: 'SECTION_DISAMBIGUATION_REQUIRED',
+            message: `Multiple sections available. Please select section on keypad (1-${Math.min(candidateList.length, 4)}).`,
+            data: {
+              terminalId,
+              facultyId: cardHolder.id,
+              facultyUid: cleanRfid,
+              facultyName: `Prof. ${cardHolder.firstName} ${cardHolder.lastName}`,
+              sections: candidateList.map((sec, idx) => ({
+                index: idx + 1,
+                id: sec.id,
+                sectionCode: sec.sectionCode,
+                courseName: sec.courseName,
+                roomNumber: sec.roomNumber,
+                scheduleDay: sec.scheduleDay,
+                scheduleTime: sec.scheduleTime,
+                scheduleEndTime: sec.scheduleEndTime,
+              })),
+            },
+          };
+        }
       }
 
       const newSession = await prisma.session.create({
@@ -864,6 +904,211 @@ export class HardwareService {
         status,
         tapTime: now.toISOString(),
         elapsedMins: Math.round(elapsedMins),
+      },
+    };
+  }
+
+  /**
+   * Evaluates candidate sections against the current day and time schedule window (±30 mins).
+   */
+  filterSectionsBySchedule(sections: any[], date: Date = new Date()): any[] {
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const currentDay = dayNames[date.getDay()];
+    const currentMinutes = date.getHours() * 60 + date.getMinutes();
+
+    // Mapping of day of week index to standard university scheduling tokens
+    const dayTokensMap: Record<number, string[]> = {
+      0: ['sun', 'sunday', 'u', 'daily'],
+      1: ['mon', 'monday', 'm', 'mwf', 'mw', 'daily'],
+      2: ['tue', 'tues', 'tuesday', 't', 'tth', 'tf', 'daily'],
+      3: ['wed', 'wednesday', 'w', 'mwf', 'mw', 'daily'],
+      4: ['thu', 'thur', 'thurs', 'thursday', 'th', 'tth', 'r', 'daily'],
+      5: ['fri', 'friday', 'f', 'mwf', 'tf', 'fs', 'daily'],
+      6: ['sat', 'saturday', 'sa', 's', 'fs', 'daily'],
+    };
+
+    const validTokensToday = dayTokensMap[date.getDay()] || [currentDay.toLowerCase()];
+
+    return sections.filter((sec) => {
+      // 1. Day of week match
+      if (sec.scheduleDay) {
+        const schedDay = sec.scheduleDay.trim().toLowerCase();
+        // Check if raw schedule contains any valid day token or if tokenized words match
+        const parts: string[] = schedDay.split(/[\s,/\-]+/).filter(Boolean);
+        const matchesDay =
+          validTokensToday.includes(schedDay) ||
+          parts.some((p: string) => validTokensToday.includes(p)) ||
+          validTokensToday.some((token: string) => token.length > 2 && schedDay.includes(token));
+
+        if (!matchesDay) return false;
+      }
+
+      // 2. Time window match (±30 mins of scheduleTime, or between start-30m and scheduleEndTime)
+      if (sec.scheduleTime) {
+        const timeParts = sec.scheduleTime.split(':').map(Number);
+        if (timeParts.length >= 2 && !isNaN(timeParts[0]) && !isNaN(timeParts[1])) {
+          const startMinutes = timeParts[0] * 60 + timeParts[1];
+          let endMinutes = startMinutes + 30; // default 30-min window
+
+          if (sec.scheduleEndTime) {
+            const endParts = sec.scheduleEndTime.split(':').map(Number);
+            if (endParts.length >= 2 && !isNaN(endParts[0]) && !isNaN(endParts[1])) {
+              endMinutes = endParts[0] * 60 + endParts[1];
+            }
+          }
+
+          const inWindow =
+            currentMinutes >= startMinutes - 30 &&
+            currentMinutes <= Math.max(endMinutes, startMinutes + 30);
+
+          if (!inWindow) return false;
+        }
+      }
+
+      return true;
+    });
+  }
+
+  /**
+   * Manually selects and activates a section when terminal requires disambiguation
+   */
+  async selectSection(params: {
+    terminalId: string;
+    sectionId?: string;
+    index?: number;
+    facultyId?: string;
+    facultyUid?: string;
+  }): Promise<HardwareTapResult> {
+    const { terminalId, sectionId, index, facultyId, facultyUid } = params;
+
+    // Check if terminal is already open
+    const activeSession = await prisma.session.findFirst({
+      where: { terminalId, status: SessionStatus.OPEN },
+      include: { section: true, faculty: true },
+    });
+
+    if (activeSession) {
+      return {
+        statusCode: 400,
+        success: false,
+        code: 'ERROR',
+        message: `Terminal ${terminalId} already has an active session for ${activeSession.section.sectionCode}.`,
+        data: activeSession,
+      };
+    }
+
+    let targetSection: any = null;
+
+    if (sectionId) {
+      targetSection = await prisma.section.findUnique({
+        where: { id: sectionId },
+        include: { faculty: true },
+      });
+
+      if (targetSection && targetSection.terminalId && targetSection.terminalId !== terminalId) {
+        return {
+          statusCode: 400,
+          success: false,
+          code: 'ERROR',
+          message: `Section ${targetSection.sectionCode} is not assigned to terminal ${terminalId}.`,
+        };
+      }
+    } else if (index !== undefined) {
+      let resolvedFacultyId = facultyId;
+      if (!resolvedFacultyId && facultyUid) {
+        const cleanUid = this.normalizeRfid(facultyUid);
+        const fac = await prisma.user.findUnique({ where: { rfidUid: cleanUid } });
+        if (fac) resolvedFacultyId = fac.id;
+      }
+
+      // If neither facultyId nor facultyUid is provided, attempt to resolve unique faculty from terminal
+      if (!resolvedFacultyId) {
+        const termSections = await prisma.section.findMany({
+          where: { terminalId },
+          select: { facultyId: true },
+          distinct: ['facultyId'],
+        });
+        if (termSections.length === 1) {
+          resolvedFacultyId = termSections[0].facultyId;
+        }
+      }
+
+      if (!resolvedFacultyId) {
+        return {
+          statusCode: 400,
+          success: false,
+          code: 'ERROR',
+          message: 'Unable to identify faculty for section selection.',
+        };
+      }
+
+      const candidateSections = await prisma.section.findMany({
+        where: { terminalId, facultyId: resolvedFacultyId },
+        orderBy: { id: 'asc' },
+        include: { faculty: true },
+      });
+
+      const selectedIndex = Number(index) - 1;
+      if (selectedIndex >= 0 && selectedIndex < candidateSections.length) {
+        targetSection = candidateSections[selectedIndex];
+      }
+    }
+
+    if (!targetSection) {
+      return {
+        statusCode: 404,
+        success: false,
+        code: 'ERROR',
+        message: 'Invalid section selection or section not found.',
+      };
+    }
+
+    const now = new Date();
+    const newSession = await prisma.session.create({
+      data: {
+        sectionId: targetSection.id,
+        facultyId: targetSection.facultyId,
+        terminalId,
+        status: SessionStatus.OPEN,
+        startTime: now,
+        lateThresholdMins: targetSection.defaultLateThresholdMins,
+        cutThresholdMins: targetSection.defaultCutThresholdMins,
+      },
+      include: {
+        section: true,
+        faculty: true,
+      },
+    });
+
+    const activeDetails = await sessionService.getActiveSession(terminalId);
+
+    emitSessionStarted({
+      sessionId: newSession.id,
+      terminalId,
+      sectionCode: targetSection.sectionCode,
+      courseName: targetSection.courseName,
+      roomNumber: targetSection.roomNumber,
+      facultyName: `Prof. ${targetSection.faculty.firstName} ${targetSection.faculty.lastName}`,
+      startTime: now.toISOString(),
+      lateThresholdMins: newSession.lateThresholdMins,
+      cutThresholdMins: newSession.cutThresholdMins,
+      totalEnrolled: activeDetails.stats.totalEnrolled,
+      roster: activeDetails.roster,
+    });
+
+    return {
+      statusCode: 200,
+      success: true,
+      code: 'SESSION_STARTED',
+      message: `SESSION OPENED: ${targetSection.sectionCode} (${targetSection.roomNumber})`,
+      data: {
+        sessionId: newSession.id,
+        sectionCode: targetSection.sectionCode,
+        courseName: targetSection.courseName,
+        facultyName: `${targetSection.faculty.firstName} ${targetSection.faculty.lastName}`,
+        startTime: now.toISOString(),
+        lateThresholdMins: newSession.lateThresholdMins,
+        cutThresholdMins: newSession.cutThresholdMins,
       },
     };
   }

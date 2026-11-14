@@ -36,6 +36,12 @@ enum AttendanceStatus {
   EXCUSED
 }
 
+enum ExcuseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum AuthMethod {
   RFID_TAP
   KEYPAD_OTP
@@ -69,6 +75,8 @@ model User {
   attendanceLogs      AttendanceLog[] @relation("StudentAttendance")
   otpCodes            OtpCode[]       @relation("StudentOtps")
   overridesAuthorized AttendanceLog[] @relation("FacultyOverrides")
+  excuseRequests      ExcuseRequest[] @relation("StudentExcuseRequests")
+  reviewedExcuses     ExcuseRequest[] @relation("FacultyExcuseReviews")
 
   @@index([role])
   @@index([rfidUid])
@@ -126,6 +134,7 @@ model Session {
   endTime           DateTime?
   lateThresholdMins Int           @default(15) // Dynamic threshold adjustable via faculty dashboard
   cutThresholdMins  Int           @default(45) // Dynamic cut threshold adjustable via faculty dashboard
+  isAutoClosed      Boolean       @default(false)
   reportPdfPath     String?       // Stored file path for generated PDF master roster
   reportCsvPath     String?       // Stored file path for generated CSV roster
   reportSentAt      DateTime?     // Timestamp when report was dispatched via email to faculty
@@ -158,6 +167,7 @@ model AttendanceLog {
   overriddenById     String?          // Faculty ID who authorized the manual override
   overriddenBy       User?            @relation("FacultyOverrides", fields: [overriddenById], references: [id], onDelete: SetNull)
   overriddenAt       DateTime?
+  excuseRequest      ExcuseRequest?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
@@ -167,6 +177,28 @@ model AttendanceLog {
   @@unique([sessionId, studentId])
   @@index([sessionId, status])
   @@index([studentId])
+}
+
+/// Excuse Request submitted by student for absent/cut sessions
+model ExcuseRequest {
+  id              String        @id @default(uuid())
+  studentId       String
+  student         User          @relation("StudentExcuseRequests", fields: [studentId], references: [id], onDelete: Cascade)
+  attendanceLogId String        @unique
+  attendanceLog   AttendanceLog @relation(fields: [attendanceLogId], references: [id], onDelete: Cascade)
+  reason          String
+  documentUrl     String?       // Local file path or secure URL to uploaded excuse slip
+  documentName    String?       // Original uploaded filename
+  status          ExcuseStatus  @default(PENDING)
+  reviewedById    String?
+  reviewedBy      User?         @relation("FacultyExcuseReviews", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewNotes     String?
+  reviewedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([studentId])
+  @@index([status])
 }
 
 /// One-Time PIN for 60-second exception fallback when student forgets badge

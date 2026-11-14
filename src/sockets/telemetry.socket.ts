@@ -77,6 +77,7 @@ export function emitSessionClosed(payload: {
   sectionCode: string;
   courseName: string;
   endTime: string;
+  isAutoClosed?: boolean;
   stats: {
     totalEnrolled: number;
     present: number;
@@ -88,9 +89,23 @@ export function emitSessionClosed(payload: {
   roster: any[];
 }) {
   if (!io) return;
-  console.log(`📢 Broadcasting [session:closed] for session ${payload.sessionId}`);
+  console.log(`📢 Broadcasting [session:closed] for session ${payload.sessionId} (autoClosed=${payload.isAutoClosed || false})`);
   io.emit('session:closed', payload);
   io.to(`terminal:${payload.terminalId}`).emit('session:closed', payload);
+}
+
+export function emitExcuseReviewed(payload: {
+  excuseId: string;
+  attendanceLogId: string;
+  studentId: string;
+  status: string;
+  reviewedBy: string;
+  reviewNotes?: string | null;
+  reviewedAt: string;
+}) {
+  if (!io) return;
+  console.log(`📢 Broadcasting [excuse:reviewed] id=${payload.excuseId} status=${payload.status}`);
+  io.emit('excuse:reviewed', payload);
 }
 
 export function emitAttendanceUpdated(payload: {
