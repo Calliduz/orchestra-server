@@ -84,9 +84,11 @@ export class StudentController {
         id: log.id,
         session: {
           id: log.session.id,
+          status: log.session.status,
           startTime: log.session?.startTime
             ? new Date(log.session.startTime).toISOString()
             : (log.tapTimestamp || log.createdAt).toISOString(),
+          endTime: log.session?.endTime ? new Date(log.session.endTime).toISOString() : null,
           courseCode: log.session.section.sectionCode,
           courseName: log.session.section.courseName,
           room: log.session.section.roomNumber,
@@ -95,6 +97,8 @@ export class StudentController {
           facultyName: `${log.session.faculty.firstName} ${log.session.faculty.lastName}`,
         },
         timestamp: (log.tapTimestamp || log.session?.startTime || log.createdAt).toISOString(),
+        egressTimestamp: log.egressTimestamp ? log.egressTimestamp.toISOString() : null,
+        totalMinutesAttended: log.totalMinutesAttended ?? null,
         status: log.status,
         authMethod: log.authMethod,
         isManualOverride: log.isManualOverride,

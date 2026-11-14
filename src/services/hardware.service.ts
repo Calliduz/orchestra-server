@@ -24,6 +24,7 @@ export interface HardwareTapResult {
     | 'SESSION_STARTED'
     | 'SESSION_CLOSED'
     | 'ACCESS_GRANTED'
+    | 'EGRESS_RECORDED'
     | 'SESSION_LOCKED'
     | 'NOT_ENROLLED'
     | 'NOT_SESSION_OWNER'
@@ -960,7 +961,7 @@ export class HardwareService {
       };
     }
 
-    // 2. Anti-Passback Defense Check
+    // 2. Anti-Passback Defense Check & Dual Ingress / Egress Evaluation
     const existingLog = await prisma.attendanceLog.findUnique({
       where: {
         sessionId_studentId: {
@@ -970,22 +971,187 @@ export class HardwareService {
       },
     });
 
-    if (existingLog && existingLog.authMethod !== AuthMethod.AUTO_ABSENT) {
+    if (existingLog && existingLog.authMethod !== AuthMethod.AUTO_ABSENT && existingLog.tapTimestamp) {
+      const timeSinceIngress = now.getTime() - new Date(existingLog.tapTimestamp).getTime();
+
+      // Pacing interlock: if student taps again within 3 seconds of ingress, treat as anti-passback cooldown
+      if (timeSinceIngress < 3000 && !existingLog.egressTimestamp) {
+        return {
+          statusCode: 409,
+          success: false,
+          code: 'ALREADY_RECORDED',
+          message: `ANTI-PASSBACK ALERT: ${cardHolder.firstName} ${cardHolder.lastName} is already checked in.`,
+          data: {
+            studentId: cardHolder.studentId,
+            studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+            status: existingLog.status,
+            tapTime: existingLog.tapTimestamp.toISOString(),
+          },
+        };
+      }
+
+      // If student has already egressed:
+      if (existingLog.egressTimestamp) {
+        const timeSinceEgress = now.getTime() - new Date(existingLog.egressTimestamp).getTime();
+        const existingEgress = new Date(existingLog.egressTimestamp);
+        const timeOutFormatted = existingEgress.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        });
+
+        if (timeSinceEgress < 3000) {
+          // Rapid re-tap window: acknowledge exit
+          return {
+            statusCode: 200,
+            success: true,
+            code: 'EGRESS_RECORDED',
+            message: `CHECK-OUT ACKNOWLEDGED: ${cardHolder.firstName} ${cardHolder.lastName} already checked out.`,
+            data: {
+              studentId: cardHolder.studentId,
+              studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+              status: existingLog.status,
+              tapTime: existingLog.tapTimestamp.toISOString(),
+              egressTime: existingLog.egressTimestamp.toISOString(),
+              timeOut: timeOutFormatted,
+              totalMinutesAttended: existingLog.totalMinutesAttended,
+              totalMinutes: existingLog.totalMinutesAttended,
+            },
+          };
+        }
+
+        // Tapped again after cooldown while already egressed: update egress timestamp
+        const egress = now;
+        const ingress = new Date(existingLog.tapTimestamp);
+        const totalMinutesAttended = Math.max(0, Math.round((egress.getTime() - ingress.getTime()) / 60000));
+
+        const updatedLog = await prisma.attendanceLog.update({
+          where: { id: existingLog.id },
+          data: {
+            egressTimestamp: egress,
+            totalMinutesAttended,
+          },
+        });
+
+        const activeDetails = await sessionService.getActiveSession(terminalId);
+
+        emitAttendanceUpdated({
+          sessionId: activeSession.id,
+          terminalId,
+          studentId: cardHolder.id,
+          studentNumber: cardHolder.studentId || 'N/A',
+          studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+          status: updatedLog.status,
+          authMethod: AuthMethod.RFID_TAP,
+          tapTimestamp: ingress.toISOString(),
+          egressTimestamp: egress.toISOString(),
+          totalMinutesAttended,
+          isManualOverride: updatedLog.isManualOverride,
+          overrideReason: updatedLog.overrideReason,
+          stats: activeDetails.stats,
+          roster: activeDetails.roster,
+        });
+
+        const updatedTimeOut = egress.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        });
+
+        return {
+          statusCode: 200,
+          success: true,
+          code: 'EGRESS_RECORDED',
+          message: `CHECK-OUT UPDATED: ${cardHolder.firstName} ${cardHolder.lastName} (${totalMinutesAttended} min${totalMinutesAttended === 1 ? '' : 's'})`,
+          data: {
+            studentId: cardHolder.studentId,
+            studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+            status: updatedLog.status,
+            tapTime: ingress.toISOString(),
+            egressTime: egress.toISOString(),
+            timeOut: updatedTimeOut,
+            totalMinutesAttended,
+            totalMinutes: totalMinutesAttended,
+          },
+        };
+      }
+
+      // Initial tap after pacing cooldown = Egress (Check-Out)
+      const egress = now;
+      const ingress = new Date(existingLog.tapTimestamp);
+      const totalMinutesAttended = Math.max(0, Math.round((egress.getTime() - ingress.getTime()) / 60000));
+
+      const updatedLog = await prisma.attendanceLog.update({
+        where: { id: existingLog.id },
+        data: {
+          egressTimestamp: egress,
+          totalMinutesAttended,
+        },
+      });
+
+      // Dispatch Egress Digital Email Receipt
+      mailerService
+        .sendEgressReceipt({
+          logId: updatedLog.id,
+          studentEmail: cardHolder.email,
+          studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+          sectionCode: activeSession.section.sectionCode,
+          courseName: activeSession.section.courseName,
+          roomNumber: activeSession.section.roomNumber,
+          terminalId,
+          status: updatedLog.status,
+          tapTime: ingress,
+          egressTime: egress,
+          totalMinutesAttended,
+          authMethod: 'RFID Tap (13.56MHz Contactless)',
+        })
+        .catch((err) => console.error('Egress receipt async dispatch error:', err));
+
+      // Broadcast Real-Time Telemetry to Faculty Dashboard
+      const activeDetails = await sessionService.getActiveSession(terminalId);
+
+      emitAttendanceUpdated({
+        sessionId: activeSession.id,
+        terminalId,
+        studentId: cardHolder.id,
+        studentNumber: cardHolder.studentId || 'N/A',
+        studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
+        status: updatedLog.status,
+        authMethod: AuthMethod.RFID_TAP,
+        tapTimestamp: ingress.toISOString(),
+        egressTimestamp: egress.toISOString(),
+        totalMinutesAttended,
+        isManualOverride: updatedLog.isManualOverride,
+        overrideReason: updatedLog.overrideReason,
+        stats: activeDetails.stats,
+        roster: activeDetails.roster,
+      });
+
+      const timeOutFormatted = egress.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      });
+
       return {
-        statusCode: 409,
-        success: false,
-        code: 'ALREADY_RECORDED',
-        message: `ANTI-PASSBACK ALERT: ${cardHolder.firstName} ${cardHolder.lastName} is already checked in.`,
+        statusCode: 200,
+        success: true,
+        code: 'EGRESS_RECORDED',
+        message: `CHECK-OUT RECORDED: ${cardHolder.firstName} ${cardHolder.lastName} (${totalMinutesAttended} min${totalMinutesAttended === 1 ? '' : 's'})`,
         data: {
           studentId: cardHolder.studentId,
           studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
-          status: existingLog.status,
-          tapTime: existingLog.tapTimestamp,
+          status: updatedLog.status,
+          tapTime: ingress.toISOString(),
+          egressTime: egress.toISOString(),
+          timeOut: timeOutFormatted,
+          totalMinutesAttended,
+          totalMinutes: totalMinutesAttended,
         },
       };
     }
 
-    // 3. Punctuality Evaluation
+    // 3. Punctuality Evaluation (First Tap = Ingress)
     const elapsedMins = (now.getTime() - new Date(activeSession.startTime).getTime()) / (1000 * 60);
 
     let status: AttendanceStatus = AttendanceStatus.PRESENT;
@@ -995,7 +1161,7 @@ export class HardwareService {
       status = AttendanceStatus.LATE;
     }
 
-    // 4. Create or Update Attendance Record
+    // 4. Create or Update Attendance Record (Ingress)
     let attendanceLog;
     try {
       if (existingLog) {
@@ -1005,6 +1171,8 @@ export class HardwareService {
             status,
             authMethod: AuthMethod.RFID_TAP,
             tapTimestamp: now,
+            egressTimestamp: null,
+            totalMinutesAttended: null,
             reverseReceiptSent: false,
           },
         });
@@ -1016,6 +1184,8 @@ export class HardwareService {
             status,
             authMethod: AuthMethod.RFID_TAP,
             tapTimestamp: now,
+            egressTimestamp: null,
+            totalMinutesAttended: null,
             reverseReceiptSent: false,
           },
         });
@@ -1032,26 +1202,28 @@ export class HardwareService {
             studentId: cardHolder.studentId,
             studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
             status,
-            tapTime: now,
+            tapTime: now.toISOString(),
           },
         };
       }
       throw err;
     }
 
-    // 5. Asynchronous Multi-Layer Anti-Proxy Defense: Automated Reverse-Receipt Notification
+    // 5. Asynchronous Multi-Layer Anti-Proxy Defense: Automated Digital Ingress Receipt
     mailerService
-      .sendReverseReceipt({
+      .sendIngressReceipt({
         logId: attendanceLog.id,
         studentEmail: cardHolder.email,
         studentName: `${cardHolder.firstName} ${cardHolder.lastName}`,
         sectionCode: activeSession.section.sectionCode,
         courseName: activeSession.section.courseName,
         roomNumber: activeSession.section.roomNumber,
+        terminalId,
+        status,
         tapTime: now,
         authMethod: 'RFID Tap (13.56MHz Contactless)',
       })
-      .catch((err) => console.error('Reverse-receipt async dispatch error:', err));
+      .catch((err) => console.error('Ingress receipt async dispatch error:', err));
 
     // 6. Broadcast Real-Time Telemetry to Faculty Dashboard
     const activeDetails = await sessionService.getActiveSession(terminalId);
@@ -1065,6 +1237,8 @@ export class HardwareService {
       status,
       authMethod: AuthMethod.RFID_TAP,
       tapTimestamp: now.toISOString(),
+      egressTimestamp: null,
+      totalMinutesAttended: null,
       isManualOverride: false,
       stats: activeDetails.stats,
       roster: activeDetails.roster,

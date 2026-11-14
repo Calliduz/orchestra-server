@@ -65,6 +65,8 @@ export class SessionService {
           status: AttendanceStatus.ABSENT,
           authMethod: null,
           tapTimestamp: null,
+          egressTimestamp: null,
+          totalMinutesAttended: null,
           isManualOverride: false,
           overrideReason: null,
           reverseReceiptSent: false,
@@ -99,7 +101,7 @@ export class SessionService {
       orderBy: { student: { lastName: 'asc' } },
     });
 
-    const logsMap = new Map(session.attendanceLogs.map((l) => [l.studentId, l]));
+    const logsMap = new Map((session.attendanceLogs || []).map((l) => [l.studentId, l]));
 
     const roster = enrollments.map((enr) => {
       const student = enr.student;
@@ -116,6 +118,8 @@ export class SessionService {
         status: log ? log.status : AttendanceStatus.ABSENT,
         authMethod: log ? log.authMethod : null,
         tapTimestamp: log ? log.tapTimestamp : null,
+        egressTimestamp: log ? log.egressTimestamp : null,
+        totalMinutesAttended: log ? log.totalMinutesAttended : null,
         isManualOverride: log ? log.isManualOverride : false,
         overrideReason: log ? log.overrideReason : null,
         reverseReceiptSent: log ? log.reverseReceiptSent : false,
@@ -134,7 +138,9 @@ export class SessionService {
         sectionCode: session.section.sectionCode,
         courseName: session.section.courseName,
         roomNumber: session.section.roomNumber,
-        facultyName: session.faculty.role === 'ADMIN' ? `${session.faculty.firstName} ${session.faculty.lastName}` : `Prof. ${session.faculty.firstName} ${session.faculty.lastName}`,
+        facultyName: session.faculty
+          ? (session.faculty.role === 'ADMIN' ? `${session.faculty.firstName} ${session.faculty.lastName}` : `Prof. ${session.faculty.firstName} ${session.faculty.lastName}`)
+          : 'Instructor',
         startTime: session.startTime,
         lateThresholdMins: session.lateThresholdMins,
         cutThresholdMins: session.cutThresholdMins,
@@ -302,6 +308,8 @@ export class SessionService {
       status: updatedLog.status,
       authMethod: updatedLog.authMethod,
       tapTimestamp: updatedLog.tapTimestamp ? updatedLog.tapTimestamp.toISOString() : null,
+      egressTimestamp: updatedLog.egressTimestamp ? updatedLog.egressTimestamp.toISOString() : null,
+      totalMinutesAttended: updatedLog.totalMinutesAttended ?? null,
       isManualOverride: true,
       overrideReason: params.reason,
       stats: refreshed.stats,

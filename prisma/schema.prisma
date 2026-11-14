@@ -159,8 +159,10 @@ model AttendanceLog {
   student            User             @relation("StudentAttendance", fields: [studentId], references: [id], onDelete: Cascade)
   status             AttendanceStatus @default(PRESENT)
   authMethod         AuthMethod       @default(RFID_TAP)
-  tapTimestamp       DateTime?        // Exact hardware scan or OTP submission timestamp (null if marked absent)
-  reverseReceiptSent Boolean          @default(false)
+  tapTimestamp         DateTime?        // Exact hardware scan or OTP submission timestamp (null if marked absent)
+  egressTimestamp      DateTime?        // Exact hardware exit scan timestamp
+  totalMinutesAttended Int?             // Total minutes between ingress tapTimestamp and egressTimestamp
+  reverseReceiptSent   Boolean          @default(false)
   receiptSentAt      DateTime?        // Timestamp when security reverse-receipt email was dispatched
   isManualOverride   Boolean          @default(false)
   overrideReason     String?          // e.g. "Clinic Visit", "Forgotten ID", "Dean's Excuse Slip"

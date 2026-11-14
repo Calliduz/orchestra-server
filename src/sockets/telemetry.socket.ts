@@ -117,6 +117,8 @@ export function emitAttendanceUpdated(payload: {
   status: string;
   authMethod: string;
   tapTimestamp: string | null;
+  egressTimestamp?: string | null;
+  totalMinutesAttended?: number | null;
   isManualOverride: boolean;
   overrideReason?: string | null;
   stats: {
